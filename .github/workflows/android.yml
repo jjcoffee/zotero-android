@@ -42,6 +42,7 @@ jobs:
 
       - name: Generate dev build
         run: ./gradlew --no-configuration-cache -PpreDexLibs=false bundleDev --stacktrace
+        
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
