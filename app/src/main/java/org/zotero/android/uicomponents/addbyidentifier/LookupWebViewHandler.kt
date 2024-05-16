@@ -24,10 +24,9 @@ import org.zotero.android.ktx.unmarshalList
 import org.zotero.android.translator.data.WebViewError
 import org.zotero.android.translator.helper.TranslatorHelper
 import timber.log.Timber
-import javax.inject.Inject
 import kotlin.coroutines.resume
 
-class LookupWebViewHandler @Inject constructor(
+class LookupWebViewHandler constructor(
     dispatchers: Dispatchers,
     private val context: Context,
     private val gson: Gson,
@@ -197,7 +196,7 @@ class LookupWebViewHandler @Inject constructor(
             val error = networkResult.stringResponse
             sendHttpResponse(
                 data = error,
-                statusCode = -1,
+                statusCode = networkResult.httpCode,
                 url = null,
                 successCodes = successCodes,
                 headers = mapOf(),

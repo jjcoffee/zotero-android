@@ -82,6 +82,7 @@ import org.zotero.android.sync.SchemaController
 import org.zotero.android.sync.SyncKind
 import org.zotero.android.sync.SyncScheduler
 import org.zotero.android.sync.Tag
+import org.zotero.android.uicomponents.addbyidentifier.data.AddByIdentifierPickerArgs
 import org.zotero.android.uicomponents.bottomsheet.LongPressOptionItem
 import org.zotero.android.uicomponents.singlepicker.SinglePickerArgs
 import org.zotero.android.uicomponents.singlepicker.SinglePickerResult
@@ -119,6 +120,8 @@ internal class AllItemsViewModel @Inject constructor(
         metadataEditable = false,
         filesEditable = false
     )
+
+    private var isTablet: Boolean = false
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onEvent(event: EventBusConstants.FileWasSelected) {
@@ -178,6 +181,7 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun init(isTablet: Boolean) = initOnce {
+        this.isTablet = isTablet
         EventBus.getDefault().register(this)
         val args = ScreenArguments.allItemsArgs
         this.collection = args.collection
@@ -639,8 +643,13 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun showFilters() {
-        initShowFilterArgs()
-        triggerEffect(AllItemsViewEffect.ShowFilterEffect)
+        if (isTablet) {
+            onShowDownloadedFilesPopupClicked()
+        } else {
+            initShowFilterArgs()
+            triggerEffect(AllItemsViewEffect.ShowFilterEffect)
+        }
+
     }
 
     private fun initShowFilterArgs() {
@@ -1034,7 +1043,34 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun onAddByIdentifier() {
+        ScreenArguments.addByIdentifierPickerArgs =
+            AddByIdentifierPickerArgs(restoreLookupState = false)
         triggerEffect(ShowAddByIdentifierEffect)
+    }
+
+    fun dismissDownloadedFilesPopup() {
+        updateState {
+            copy(
+                showDownloadedFilesPopup = false
+            )
+        }
+    }
+
+    private fun onShowDownloadedFilesPopupClicked() {
+        updateState {
+            copy(
+                showDownloadedFilesPopup = true,
+            )
+        }
+    }
+
+    fun onDownloadedFilesTapped() {
+        val newSelectedState = !viewState.isDownloadsFilterEnabled()
+        if (newSelectedState) {
+            enable(ItemsFilter.downloadedFiles)
+        } else {
+            disable(ItemsFilter.downloadedFiles)
+        }
     }
 
 }
@@ -1052,7 +1088,8 @@ internal data class AllItemsViewState(
     val filters: List<ItemsFilter> = emptyList(),
     val isCollectionTrash: Boolean = false,
     val isCollectionACollection: Boolean = false,
-    val collectionName: String = ""
+    val collectionName: String = "",
+    val showDownloadedFilesPopup: Boolean = false,
 ) : ViewState {
     val tagsFilter: Set<String>?
         get() {
@@ -1086,6 +1123,10 @@ internal data class AllItemsViewState(
             return beingDownloadedAccessory
         }
         return itemCellModels.firstOrNull { it.key == itemKey }?.accessory
+    }
+
+    fun isDownloadsFilterEnabled(): Boolean {
+        return filters.any { it is ItemsFilter.downloadedFiles }
     }
 }
 
