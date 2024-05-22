@@ -1,79 +1,87 @@
-package org.zotero.android.uicomponents.addbyidentifier
+package org.zotero.android.screens.scanbarcode
 
 import android.content.Context
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import org.zotero.android.androidx.content.longToast
 import org.zotero.android.api.pojo.sync.KeyBaseKeyPair
 import org.zotero.android.architecture.BaseViewModel2
 import org.zotero.android.architecture.ViewEffect
 import org.zotero.android.architecture.ViewState
-import org.zotero.android.architecture.navigation.NavigationParamsMarshaller
-import org.zotero.android.architecture.navigation.phone.ARG_ADD_BY_IDENTIFIER
-import org.zotero.android.architecture.require
 import org.zotero.android.attachmentdownloader.RemoteAttachmentDownloader
 import org.zotero.android.attachmentdownloader.RemoteAttachmentDownloaderEventStream
 import org.zotero.android.database.objects.FieldKeys
 import org.zotero.android.files.FileStore
+import org.zotero.android.screens.scanbarcode.ScanBarcodeViewEffect.NavigateBack
+import org.zotero.android.screens.scanbarcode.ScanBarcodeViewModel.State
 import org.zotero.android.sync.LibraryIdentifier
 import org.zotero.android.sync.SchemaController
-import org.zotero.android.uicomponents.addbyidentifier.data.AddByIdentifierPickerArgs
-import org.zotero.android.uicomponents.addbyidentifier.data.ISBNParser
+import org.zotero.android.uicomponents.Strings
+import org.zotero.android.uicomponents.addbyidentifier.IdentifierLookupController
 import org.zotero.android.uicomponents.addbyidentifier.data.LookupRow
 import org.zotero.android.uicomponents.addbyidentifier.data.LookupRowItem
 import timber.log.Timber
 import javax.inject.Inject
 
 @HiltViewModel
-internal class AddByIdentifierViewModel @Inject constructor(
+internal class ScanBarcodeViewModel @Inject constructor(
     private val fileStore: FileStore,
     private val identifierLookupController: IdentifierLookupController,
     private val attachmentDownloaderEventStream: RemoteAttachmentDownloaderEventStream,
     private val schemaController: SchemaController,
     private val remoteFileDownloader: RemoteAttachmentDownloader,
     private val context: Context,
-    stateHandle: SavedStateHandle,
-    private val navigationParamsMarshaller: NavigationParamsMarshaller,
-) : BaseViewModel2<AddByIdentifierViewState, AddByIdentifierViewEffect>(AddByIdentifierViewState()) {
-
-    private val screenArgs: AddByIdentifierPickerArgs by lazy {
-        val argsEncoded = stateHandle.get<String>(ARG_ADD_BY_IDENTIFIER).require()
-        navigationParamsMarshaller.decodeObjectFromBase64(argsEncoded)
-    }
-
-    private val scannerPatternRegex =
-        "10.\\d{4,9}\\/[-._;()\\/:a-zA-Z0-9]+"
+) : BaseViewModel2<ScanBarcodeViewState, ScanBarcodeViewEffect>(ScanBarcodeViewState()) {
 
     fun init() = initOnce {
         setupAttachmentObserving()
         val collectionKeys =
             fileStore.getSelectedCollectionId().keyGet?.let { setOf(it) } ?: emptySet()
         val libraryId = fileStore.getSelectedLibrary()
-        val restoreLookupState = screenArgs.restoreLookupState
         initState(
-            restoreLookupState = restoreLookupState,
             hasDarkBackground = false,
             collectionKeys = collectionKeys,
             libraryId = libraryId
         )
 
         initialize(collectionKeys = collectionKeys, libraryId = libraryId)
+
+        launchBarcodeScanner()
+    }
+
+    fun launchBarcodeScanner() {
+        val scanner = GmsBarcodeScanning.getClient(context)
+        scanner.startScan()
+            .addOnSuccessListener { barcode ->
+                val scannedString = barcode.rawValue ?: ""
+                onLookup(scannedString)
+            }
+            .addOnCanceledListener {
+                triggerEffect(NavigateBack)
+            }
+            .addOnFailureListener { e ->
+                Timber.e(e, "Barcode scanning failed")
+                context.longToast("Barcode scanning is not supported on your device")
+                triggerEffect(NavigateBack)
+            }
     }
 
     private fun initialize(collectionKeys: Set<String>, libraryId: LibraryIdentifier) {
         identifierLookupController.initialize(
             libraryId = libraryId,
+            shouldSkipLookupsCleaning = true,
             collectionKeys = collectionKeys
         ) { lookupData ->
             if (lookupData == null) {
                 Timber.e("LookupActionHandler: can't create observer")
                 return@initialize
             }
-            if (viewState.restoreLookupState && lookupData.isNotEmpty()) {
-                Timber.i("AddByIdentifierVIewModel: restoring lookup state")
+            if (lookupData.isNotEmpty()) {
+                Timber.i("ScanBarcodeViewModel: restoring lookup state")
                 updateLookupState(State.lookup(lookupData))
             }
             identifierLookupController.observable
@@ -97,11 +105,10 @@ internal class AddByIdentifierViewModel @Inject constructor(
                             val identifiers = update.kind.identifiers
                             if (identifiers.isEmpty()) {
                                 if (update.lookupData.isEmpty()) {
-                                    updateLookupState(State.failed(Error.noIdentifiersDetectedAndNoLookupData))
+                                    context.longToast(Strings.errors_lookup)
                                 } else {
-                                    updateLookupState(State.failed(Error.noIdentifiersDetectedWithLookupData))
+                                    context.longToast(Strings.errors_lookup_no_identifiers_with_lookup_data)
                                 }
-                                return@onEach
                             }
                             updateLookupState(State.lookup(update.lookupData))
                         }
@@ -126,14 +133,12 @@ internal class AddByIdentifierViewModel @Inject constructor(
     }
 
     private fun initState(
-        restoreLookupState: Boolean,
         hasDarkBackground: Boolean,
         collectionKeys: Set<String>,
         libraryId: LibraryIdentifier
     ) {
         updateState {
             copy(
-                restoreLookupState = restoreLookupState,
                 collectionKeys = collectionKeys,
                 libraryId = libraryId,
                 hasDarkBackground = hasDarkBackground,
@@ -142,48 +147,9 @@ internal class AddByIdentifierViewModel @Inject constructor(
         updateLookupState(State.waitingInput)
     }
 
-    fun process(scannedText: String) {
-        val identifiers = Regex(scannerPatternRegex).findAll(scannedText).map { it.value }.toMutableList()
-        val isbns = ISBNParser.isbns(scannedText)
-        if (isbns.isNotEmpty()) {
-            identifiers.addAll(isbns)
-        }
-
-        if (identifiers.isEmpty()) {
-            return
-        }
-
-        val scannedText = identifiers.joinToString(", ")
-
-        var newText = viewState.identifierText
-        if (newText.isEmpty()) {
-            newText = scannedText
-        } else {
-            newText += ", " + scannedText
-        }
-        updateState {
-            copy(identifierText = newText)
-        }
-    }
-
-//    fun onScanText() {
-//        val scanner = GmsBarcodeScanning.getClient(context)
-//        scanner.startScan()
-//            .addOnSuccessListener { barcode ->
-//                val scannedString = barcode.rawValue ?: ""
-//                process(scannedString)
-//            }
-//            .addOnCanceledListener {
-//                // Task canceled
-//            }
-//            .addOnFailureListener { e ->
-//               Timber.e(e, "Barcode scanning failed")
-//            }
-//    }
-
-    fun onLookup() {
-        val identifier = viewState.identifierText.trim()
+    private fun onLookup(identifier: String) {
         if (identifier.isBlank()) {
+            context.longToast("Failed to scan barcode")
             return
         }
         val newIdentifier = identifier.split("\n", ",").map { it.trim() }.filter { it.isNotEmpty() }
@@ -194,7 +160,7 @@ internal class AddByIdentifierViewModel @Inject constructor(
         }
         when (viewState.lookupState) {
             State.waitingInput, is State.failed -> {
-                updateLookupState(AddByIdentifierViewModel.State.loadingIdentifiers)
+                updateLookupState(State.loadingIdentifiers)
             }
 
             State.loadingIdentifiers, is State.lookup -> {
@@ -213,38 +179,24 @@ internal class AddByIdentifierViewModel @Inject constructor(
         }
     }
 
-
-    fun onIdentifierTextChange(newText: String) {
-        updateState {
-            copy(identifierText = newText)
-        }
-    }
-
     fun cancelAllLookups() {
         identifierLookupController.cancelAllLookups()
         updateLookupState(State.waitingInput)
-    }
-
-    override fun onCleared() {
-        identifierLookupController.cancelAllLookups()
-        super.onCleared()
     }
 
     private fun setupAttachmentObserving() {
         attachmentDownloaderEventStream.flow()
             .onEach { update ->
                 process(update = update)
-                closeAfterUpdateIfNeeded()
-
             }.launchIn(viewModelScope)
     }
 
-    private fun updateLookupState(lookupState: AddByIdentifierViewModel.State) {
+    private fun updateLookupState(lookupState: State) {
         updateState {
             copy(lookupState = lookupState)
         }
         val rowsList = mutableListOf<LookupRow>()
-        if (lookupState is AddByIdentifierViewModel.State.lookup) {
+        if (lookupState is State.lookup) {
             val data = lookupState.data
             for (lookup in data) {
                 when (lookup.state) {
@@ -327,41 +279,6 @@ internal class AddByIdentifierViewModel @Inject constructor(
         updateState {
             copy(lookupRows = rowsList)
         }
-        closeAfterUpdateIfNeeded()
-
-    }
-
-    private fun closeAfterUpdateIfNeeded() {
-        val itemIdentifiers = viewState.lookupRows
-        if (itemIdentifiers.isEmpty()) {
-            return
-        }
-        val hasActiveDownload = itemIdentifiers.any { row ->
-            when (row) {
-                is LookupRow.attachment -> {
-                    when (row.updateKind) {
-                        is RemoteAttachmentDownloader.Update.Kind.progress, RemoteAttachmentDownloader.Update.Kind.failed -> {
-                            return@any true
-                        }
-
-                        else -> {
-                            return@any false
-                        }
-                    }
-                }
-
-                is LookupRow.identifier -> {
-                    return@any true
-                }
-
-                is LookupRow.item -> {
-                    return@any false
-                }
-            }
-        }
-        if (!hasActiveDownload) {
-            triggerEffect(AddByIdentifierViewEffect.NavigateBack)
-        }
     }
 
     private fun process(update: RemoteAttachmentDownloader.Update) {
@@ -401,6 +318,11 @@ internal class AddByIdentifierViewModel @Inject constructor(
         }
     }
 
+    override fun onCleared() {
+        identifierLookupController.cancelAllLookups(shouldTrashItems = false)
+        super.onCleared()
+    }
+
 
     sealed interface State {
         data class failed(val error: Exception) : State
@@ -412,21 +334,18 @@ internal class AddByIdentifierViewModel @Inject constructor(
     sealed class Error : Exception() {
         object noIdentifiersDetectedAndNoLookupData : Error()
         object noIdentifiersDetectedWithLookupData : Error()
-
     }
 
 }
 
-internal data class AddByIdentifierViewState(
-    val identifierText: String = "",
+internal data class ScanBarcodeViewState(
     val collectionKeys: Set<String> = emptySet(),
     val libraryId: LibraryIdentifier = LibraryIdentifier.group(0),
-    val restoreLookupState: Boolean = false,
     val hasDarkBackground: Boolean = false,
-    val lookupState: AddByIdentifierViewModel.State = AddByIdentifierViewModel.State.waitingInput,
+    val lookupState: State = State.waitingInput,
     val lookupRows: List<LookupRow> = emptyList(),
 ) : ViewState
 
-internal sealed class AddByIdentifierViewEffect : ViewEffect {
-    object NavigateBack : AddByIdentifierViewEffect()
+internal sealed class ScanBarcodeViewEffect : ViewEffect {
+    object NavigateBack : ScanBarcodeViewEffect()
 }

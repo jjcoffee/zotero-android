@@ -13,6 +13,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.google.accompanist.insets.navigationBarsPadding
 import com.google.accompanist.navigation.animation.composable
 import com.google.accompanist.navigation.animation.rememberAnimatedNavController
@@ -45,6 +47,7 @@ import org.zotero.android.screens.creatoredit.toCreatorEdit
 import org.zotero.android.screens.dashboard.DashboardViewModel
 import org.zotero.android.screens.dashboard.DashboardViewState
 import org.zotero.android.screens.filter.FilterScreenPhone
+import org.zotero.android.screens.scanbarcode.ui.ScanBarcodeScreen
 import org.zotero.android.screens.settings.settingsNavScreens
 import org.zotero.android.screens.settings.toSettingsScreen
 import org.zotero.android.screens.sortpicker.sortPickerNavScreens
@@ -55,6 +58,8 @@ import org.zotero.android.uicomponents.navigation.ZoteroNavHost
 import org.zotero.android.uicomponents.singlepicker.SinglePickerScreen
 import org.zotero.android.uicomponents.theme.CustomTheme
 import java.io.File
+
+internal const val ARG_ADD_BY_IDENTIFIER = "addByIdentifierArg"
 
 @Composable
 internal fun DashboardRootPhoneNavigation(
@@ -120,6 +125,7 @@ internal fun DashboardRootPhoneNavigation(
                     navigateToTagFilter = navigation::toTagFilter,
                     navigateToAddByIdentifier = navigation::toAddByIdentifier,
                     navigateToCollectionPicker = navigation::toCollectionPicker,
+                    navigateToScanBarcode = navigation::toScanBarcode,
                     onShowPdf = { pdfScreenParams ->
                         navigation.toPdfScreen(
                         context = context,
@@ -172,10 +178,21 @@ internal fun DashboardRootPhoneNavigation(
                 }
 
                 composable(
-                    route = DashboardRootPhoneDestinations.ADD_BY_IDENTIFIER,
-                    arguments = listOf(),
+                    route = "${DashboardRootPhoneDestinations.ADD_BY_IDENTIFIER}/{$ARG_ADD_BY_IDENTIFIER}",
+                    arguments = listOf(
+                        navArgument(ARG_ADD_BY_IDENTIFIER) { type = NavType.StringType },
+                    ),
                 ) {
                     AddByIdentifierScreen(
+                        onClose = navigation::onBack,
+                    )
+                }
+
+                composable(
+                    route = DashboardRootPhoneDestinations.SCAN_BARCODE,
+                    arguments = listOf(),
+                ) {
+                    ScanBarcodeScreen(
                         onClose = navigation::onBack,
                     )
                 }
@@ -218,6 +235,7 @@ private object DashboardRootPhoneDestinations {
     const val TAG_PICKER = "tagPicker"
     const val TAG_FILTER = "tagFilter"
     const val COLLECTION_PICKER = "collectionPicker"
+    const val SCAN_BARCODE = "scanBarcode"
 
 }
 
@@ -235,8 +253,8 @@ private fun ZoteroNavigation.toSinglePicker() {
     navController.navigate(DashboardRootPhoneDestinations.SINGLE_PICKER)
 }
 
-private fun ZoteroNavigation.toAddByIdentifier() {
-    navController.navigate(DashboardRootPhoneDestinations.ADD_BY_IDENTIFIER)
+private fun ZoteroNavigation.toAddByIdentifier(params: String) {
+    navController.navigate("${DashboardRootPhoneDestinations.ADD_BY_IDENTIFIER}/$params")
 }
 
 private fun ZoteroNavigation.toCollectionPicker() {
@@ -253,5 +271,9 @@ private fun toAllItems(
     navController.popBackStack(navController.graph.id, inclusive = true)
     navController.navigate(CommonScreenDestinations.COLLECTIONS_SCREEN)
     navController.navigate(CommonScreenDestinations.ALL_ITEMS)
+}
+
+private fun ZoteroNavigation.toScanBarcode() {
+    navController.navigate(DashboardRootPhoneDestinations.SCAN_BARCODE)
 }
 

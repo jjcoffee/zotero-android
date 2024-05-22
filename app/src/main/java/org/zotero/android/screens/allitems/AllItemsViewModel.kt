@@ -52,6 +52,7 @@ import org.zotero.android.screens.addnote.data.AddOrEditNoteArgs
 import org.zotero.android.screens.addnote.data.SaveNoteAction
 import org.zotero.android.screens.allitems.AllItemsViewEffect.ShowAddByIdentifierEffect
 import org.zotero.android.screens.allitems.AllItemsViewEffect.ShowItemTypePickerEffect
+import org.zotero.android.screens.allitems.AllItemsViewEffect.ShowScanBarcode
 import org.zotero.android.screens.allitems.data.ItemAccessory
 import org.zotero.android.screens.allitems.data.ItemCellModel
 import org.zotero.android.screens.allitems.data.ItemsError
@@ -1043,9 +1044,10 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun onAddByIdentifier() {
-        ScreenArguments.addByIdentifierPickerArgs =
+        val addByIdentifierPickerArgs =
             AddByIdentifierPickerArgs(restoreLookupState = false)
-        triggerEffect(ShowAddByIdentifierEffect)
+        val params = navigationParamsMarshaller.encodeObjectToBase64(addByIdentifierPickerArgs)
+        triggerEffect(ShowAddByIdentifierEffect(params))
     }
 
     fun dismissDownloadedFilesPopup() {
@@ -1071,6 +1073,10 @@ internal class AllItemsViewModel @Inject constructor(
         } else {
             disable(ItemsFilter.downloadedFiles)
         }
+    }
+
+    fun onScanBarcode() {
+        triggerEffect(ShowScanBarcode)
     }
 
 }
@@ -1135,7 +1141,7 @@ internal sealed class AllItemsViewEffect : ViewEffect {
     object ShowItemDetailEffect: AllItemsViewEffect()
     object ShowAddOrEditNoteEffect: AllItemsViewEffect()
     object ShowItemTypePickerEffect : AllItemsViewEffect()
-    object ShowAddByIdentifierEffect : AllItemsViewEffect()
+    data class ShowAddByIdentifierEffect(val params: String) : AllItemsViewEffect()
     object ShowSortPickerEffect : AllItemsViewEffect()
     object ShowCollectionPickerEffect: AllItemsViewEffect()
     object ShowFilterEffect : AllItemsViewEffect()
@@ -1146,4 +1152,5 @@ internal sealed class AllItemsViewEffect : ViewEffect {
     object ShowImageViewer : AllItemsViewEffect()
     data class NavigateToPdfScreen(val params: String) : AllItemsViewEffect()
     object ScreenRefresh : AllItemsViewEffect()
+    object ShowScanBarcode: AllItemsViewEffect()
 }

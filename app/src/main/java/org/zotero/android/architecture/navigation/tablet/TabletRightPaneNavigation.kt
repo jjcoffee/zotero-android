@@ -5,6 +5,8 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.google.accompanist.insets.navigationBarsPadding
 import org.zotero.android.architecture.EventBusConstants.FileWasSelected.CallPoint
 import org.zotero.android.architecture.navigation.CommonScreenDestinations
@@ -15,12 +17,14 @@ import org.zotero.android.architecture.navigation.dialogFixedMaxHeight
 import org.zotero.android.architecture.navigation.imageViewerScreen
 import org.zotero.android.architecture.navigation.itemDetailsScreen
 import org.zotero.android.architecture.navigation.loadingScreen
+import org.zotero.android.architecture.navigation.phone.ARG_ADD_BY_IDENTIFIER
 import org.zotero.android.architecture.navigation.toImageViewerScreen
 import org.zotero.android.architecture.navigation.toItemDetails
 import org.zotero.android.architecture.navigation.toVideoPlayerScreen
 import org.zotero.android.architecture.navigation.videoPlayerScreen
 import org.zotero.android.screens.collectionpicker.CollectionPickerScreen
 import org.zotero.android.screens.creatoredit.CreatorEditNavigation
+import org.zotero.android.screens.scanbarcode.ui.ScanBarcodeScreen
 import org.zotero.android.screens.sortpicker.SortPickerNavigation
 import org.zotero.android.screens.tagpicker.TagPickerScreen
 import org.zotero.android.uicomponents.addbyidentifier.ui.AddByIdentifierScreen
@@ -61,6 +65,7 @@ internal fun TabletRightPaneNavigation(
             navigateToZoterWebViewScreen = toZoteroWebViewScreen,
             navigateToTagFilter = { },
             navigateToCollectionPicker = navigation::toCollectionPickerDialog,
+            navigateToScanBarcode = navigation::toScanBarcodeDialog,
             onShowPdf = onShowPdf,
         )
         itemDetailsScreen(
@@ -110,9 +115,23 @@ internal fun TabletRightPaneNavigation(
         }
 
         dialogFixedMaxHeight(
-            route = TabletRightPaneDestinations.ADD_BY_IDENTIFIER_DIALOG,
+            route = "${TabletRightPaneDestinations.ADD_BY_IDENTIFIER_DIALOG}/{$ARG_ADD_BY_IDENTIFIER}",
+            arguments = listOf(
+                navArgument(ARG_ADD_BY_IDENTIFIER) { type = NavType.StringType },
+            ),
         ) {
             AddByIdentifierScreen(
+                onClose = {
+                    navController.popBackStack()
+                },
+            )
+        }
+
+        dialogFixedMaxHeight(
+            route = TabletRightPaneDestinations.SCAN_BARCODE_DIALOG,
+            arguments = listOf(),
+        ) {
+            ScanBarcodeScreen(
                 onClose = {
                     navController.popBackStack()
                 },
@@ -128,6 +147,7 @@ private object TabletRightPaneDestinations {
     const val ADD_BY_IDENTIFIER_DIALOG = "addByIdentifierDialog"
     const val TAG_PICKER_DIALOG = "tagPickerDialog"
     const val COLLECTION_PICKER_DIALOG = "collectionPickerDialog"
+    const val SCAN_BARCODE_DIALOG = "scanBarcodeDialog"
 
 }
 
@@ -147,10 +167,14 @@ private fun ZoteroNavigation.toSinglePickerDialog() {
     navController.navigate(TabletRightPaneDestinations.SINGLE_PICKER_DIALOG)
 }
 
-private fun ZoteroNavigation.toAddByIdentifierDialog() {
-    navController.navigate(TabletRightPaneDestinations.ADD_BY_IDENTIFIER_DIALOG)
+private fun ZoteroNavigation.toAddByIdentifierDialog(params: String) {
+    navController.navigate("${TabletRightPaneDestinations.ADD_BY_IDENTIFIER_DIALOG}/$params")
 }
 
 private fun ZoteroNavigation.toCollectionPickerDialog() {
     navController.navigate(TabletRightPaneDestinations.COLLECTION_PICKER_DIALOG)
+}
+
+private fun ZoteroNavigation.toScanBarcodeDialog() {
+    navController.navigate(TabletRightPaneDestinations.SCAN_BARCODE_DIALOG)
 }
