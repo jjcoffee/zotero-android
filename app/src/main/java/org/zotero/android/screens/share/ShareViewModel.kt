@@ -131,6 +131,7 @@ internal class ShareViewModel @Inject constructor(
         setupObservers()
         ioCoroutineScope.launch {
             try {
+                Timber.i("ShareViewModel: start async collections sync")
                 syncScheduler.startSyncController(
                     type = SyncKind.collectionsOnly,
                     libraries = Libraries.all,
@@ -139,7 +140,7 @@ internal class ShareViewModel @Inject constructor(
                 val attachment = shareRawAttachmentLoader.getLoadedAttachmentResult()
                 process(attachment)
             } catch (e: Exception) {
-                Timber.e(e, "ExtensionViewModel: could not load attachment")
+                Timber.e(e, "ShareViewModel: could not load attachment")
                 updateAttachmentState(
                     AttachmentState.failed(
                         shareErrorProcessor.attachmentError(
@@ -382,6 +383,7 @@ internal class ShareViewModel @Inject constructor(
     }
 
     private fun finishSync(successful: Boolean) {
+        Timber.i("ShareViewModel: finishSync success = $successful")
         if (!successful) {
             updateState {
                 copy(collectionPickerState = CollectionPickerState.failed)
@@ -394,6 +396,7 @@ internal class ShareViewModel @Inject constructor(
             var library: Library? = null
             var collection: Collection? = null
             var recents = mutableListOf<RecentData>()
+            Timber.i("ShareViewModel: ReadCollectionAndLibraryDbRequest closure before")
             dbWrapper.realmDbStorage.perform { coordinator ->
                 val request = ReadCollectionAndLibraryDbRequest(
                     collectionId = this.selectedCollectionId,
@@ -415,7 +418,9 @@ internal class ShareViewModel @Inject constructor(
                         //no-op
                     }
                 }
+                Timber.i("ShareViewModel: ReadCollectionAndLibraryDbRequest closure exec finish. recents = ${recents.size}, collection = ${collection}, library = $_library")
             }
+            Timber.i("ShareViewModel: ReadCollectionAndLibraryDbRequest closure after. recents = ${recents.size}, collection = ${collection}, library = $library")
             if (library == null) {
                 return
             }
@@ -441,7 +446,7 @@ internal class ShareViewModel @Inject constructor(
                 )
             }
         } catch (e: Exception) {
-            Timber.e(e, "can't load collections")
+            Timber.e(e, "ShareViewModel: can't load collections")
             val library = Library(
                 identifier = this.defaultLibraryId,
                 name = RCustomLibraryType.myLibrary.libraryName,

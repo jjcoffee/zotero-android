@@ -54,6 +54,7 @@ class IdentifierLookupController @Inject constructor(
     private val schemaController: SchemaController,
     private val dbWrapper: DbWrapper,
     private val defaults: Defaults,
+    private val translatorLoadedEventStream: TranslatorLoadedEventStream,
     private val attachmentDownloaderEventStream: RemoteAttachmentDownloaderEventStream,
 ) {
 
@@ -109,6 +110,7 @@ class IdentifierLookupController @Inject constructor(
             translatorsLoader = translatorsLoader,
             fileStore = fileStore,
             noAuthenticationApi = noAuthenticationApi,
+            translatorLoadedEventStream = translatorLoadedEventStream,
         )
         lookupWebViewHandlersByLookupSettings[lookupSettings] = lookupWebViewHandler
         setupObserver(lookupWebViewHandler)
@@ -628,6 +630,16 @@ class IdentifierLookupController @Inject constructor(
         cleanupLookup(force = force, completion = completion)
     }
 
+    fun trashItem(identifier: String, itemKey: String, libraryId: LibraryIdentifier) {
+        lookupData.remove(identifier)
+        val request = MarkItemsAsTrashedDbRequest(
+            keys = listOf(itemKey),
+            libraryId = libraryId,
+            trashed = true
+        )
+        dbWrapper.realmDbStorage.perform(request)
+    }
+
     suspend fun lookUp(
         libraryId: LibraryIdentifier,
         collectionKeys: Set<String>,
@@ -661,7 +673,7 @@ class IdentifierLookupController @Inject constructor(
                 )
             }
         }
-        if (!shouldTrashItems) {
+        if (!shouldTrashItems || !this::observable.isInitialized) {
             return
         }
         val storedItemResponses = lookupData.values.mapNotNull {
