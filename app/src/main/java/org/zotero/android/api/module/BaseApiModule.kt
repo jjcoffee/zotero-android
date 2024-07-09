@@ -9,8 +9,8 @@ import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import org.zotero.android.BuildConfig
 import org.zotero.android.api.ClientInfoNetworkInterceptor
-import org.zotero.android.api.ForBaseApi
 import org.zotero.android.api.NetworkConfiguration
+import org.zotero.android.api.annotations.ForBaseApi
 import org.zotero.android.ktx.setNetworkTimeout
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory

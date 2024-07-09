@@ -2,31 +2,25 @@ package org.zotero.android.screens.settings.account
 
 import android.net.Uri
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import org.zotero.android.screens.settings.SettingsDivider
-import org.zotero.android.screens.settings.SettingsItem
-import org.zotero.android.screens.settings.SettingsSection
-import org.zotero.android.screens.settings.SettingsSectionTitle
 import org.zotero.android.uicomponents.CustomScaffold
-import org.zotero.android.uicomponents.Strings
-import org.zotero.android.uicomponents.theme.CustomPalette
 import org.zotero.android.uicomponents.theme.CustomTheme
 import org.zotero.android.uicomponents.theme.CustomThemeWithStatusAndNavBars
 
 @Composable
 internal fun SettingsAccountScreen(
+    navigateToSinglePickerScreen: () -> Unit,
     onBack: () -> Unit,
     onOpenWebpage: (uri: Uri) -> Unit,
     viewModel: SettingsAccountViewModel = hiltViewModel(),
@@ -51,6 +45,10 @@ internal fun SettingsAccountScreen(
                 is SettingsAccountViewEffect.OpenWebpage -> {
                     onOpenWebpage(consumedEffect.uri)
                 }
+
+                SettingsAccountViewEffect.NavigateToSinglePickerScreen -> {
+                    navigateToSinglePickerScreen()
+                }
             }
         }
         CustomScaffold(
@@ -61,42 +59,24 @@ internal fun SettingsAccountScreen(
                 )
             },
         ) {
-            Column(
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(color = backgroundColor)
                     .padding(horizontal = 16.dp)
             ) {
-                Spacer(modifier = Modifier.height(30.dp))
-                SettingsSectionTitle(titleId = Strings.settings_data_sync)
-                SettingsSection {
-                    SettingsItem(
-                        title = viewState.username,
-                        onItemTapped = {}
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        textColor = CustomPalette.ErrorRed,
-                        title = stringResource(id = Strings.settings_logout),
-                        onItemTapped = viewModel::onSignOut
-                    )
+                item {
+                    Spacer(modifier = Modifier.height(30.dp))
+                    SettingsAccountDataSyncSection(viewState, viewModel)
                 }
-                Spacer(modifier = Modifier.height(30.dp))
-                SettingsSectionTitle(
-                    titleId = Strings.settings_account_caps
-                )
-                SettingsSection {
-                    SettingsItem(
-                        textColor = CustomTheme.colors.zoteroDefaultBlue,
-                        title = stringResource(id = Strings.settings_sync_manage_account),
-                        onItemTapped = viewModel::openManageAccount
-                    )
-                    SettingsDivider()
-                    SettingsItem(
-                        textColor = CustomPalette.ErrorRed,
-                        title = stringResource(id = Strings.settings_sync_delete_account),
-                        onItemTapped = viewModel::openDeleteAccount
-                    )
+                //TODO uncomment for File Syncing functionality
+//                item {
+//                    Spacer(modifier = Modifier.height(30.dp))
+//                    SettingsAccountFileSyncingSection(viewState, viewModel)
+//                }
+                item {
+                    Spacer(modifier = Modifier.height(30.dp))
+                    SettingsAccountAccountSection(viewModel)
                 }
             }
         }

@@ -55,9 +55,12 @@ fun <T> RealmQuery<T>.changesWithoutDeletions(libraryId: LibraryIdentifier): Rea
 }
 
 fun <T> RealmQuery<T>.itemChangesWithoutDeletions(libraryId: LibraryIdentifier): RealmQuery<T> {
-    val changePredicate = changed()
-        .or()
-        .attachmentChanged()
+    val changePredicate =
+        beginGroup()
+            .changed()
+            .or()
+            .attachmentChanged()
+            .endGroup()
     return changePredicate
         .and()
         .library(libraryId)
@@ -146,6 +149,10 @@ fun <T> RealmQuery<T>.baseTagsToDelete(): RealmQuery<T> {
 
 fun <T> RealmQuery<T>.name(name: String): RealmQuery<T> {
     return rawPredicate("name = $0", name)
+}
+
+fun <T> RealmQuery<T>.groupId(identifier: Int): RealmQuery<T> {
+    return rawPredicate("identifier == $0", identifier)
 }
 
 fun <T> RealmQuery<T>.name(name: String, libraryId: LibraryIdentifier): RealmQuery<T> {

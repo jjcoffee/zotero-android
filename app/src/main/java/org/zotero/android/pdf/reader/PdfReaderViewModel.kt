@@ -217,6 +217,13 @@ class PdfReaderViewModel @Inject constructor(
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onEvent(pdfAnnotationCommentResult: PdfAnnotationCommentResult) {
         setComment(pdfAnnotationCommentResult.annotationKey, pdfAnnotationCommentResult.comment)
+        if (isTablet) {
+            // Fix for a bug where selecting an already selected annotation again didn't trigger Annotation Edit Popup/Screen.
+            // Unfortunately PSPDFKIT's onAnnotationSelected method is not triggered when user is selecting the same annotation again. Because technically the same annotation just stays selected.
+            // That's why after finishing annotation editing we have to make PSPDFKIT to deselect the currently selected annotation.
+            // Drawback to this is that of course visually annotation gets deselected as well.
+            this.fragment.clearSelectedAnnotations()
+        }
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
@@ -350,23 +357,35 @@ class PdfReaderViewModel @Inject constructor(
         })
 
         this@PdfReaderViewModel.fragment.addDocumentListener(pdfThumbnailBar.documentListener)
-        this.fragment.addOnAnnotationCreationModeChangeListener(object:
-            AnnotationManager.OnAnnotationCreationModeChangeListener {
-            override fun onEnterAnnotationCreationMode(p0: AnnotationCreationController) {
-                set(true)
-            }
-
-            override fun onChangeAnnotationCreationMode(p0: AnnotationCreationController) {
-                set(true)
-            }
-
-            override fun onExitAnnotationCreationMode(p0: AnnotationCreationController) {
-                set(false)
-            }
-
-        })
+        addOnAnnotationCreationModeChangeListener()
+        setOnPreparePopupToolbarListener()
         fragmentManager.commit {
             add(containerId, this@PdfReaderViewModel.fragment)
+        }
+    }
+
+    private fun setOnPreparePopupToolbarListener() {
+        this.fragment.setOnPreparePopupToolbarListener { toolbar ->
+            val sourceItems = toolbar.menuItems
+            val menuItems = sourceItems.listIterator()
+
+            while (menuItems.hasNext()) {
+                val item = menuItems.next()
+                when (item.id) {
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_underline,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_strikeout,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_speak,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_search,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_redact,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_paste_annotation,
+                    com.pspdfkit.R.id.pspdf__text_selection_toolbar_item_link,
+                    -> {
+                        menuItems.remove()
+                    }
+                }
+            }
+
+            toolbar.menuItems = sourceItems
         }
     }
 
@@ -432,7 +451,7 @@ class PdfReaderViewModel @Inject constructor(
 
     private fun loadRawDocument() {
         this.rawDocument =
-            PdfDocumentLoader.openDocument(context, this.document.documentSource.fileUri)
+            PdfDocumentLoader.openDocument(context, this.document.documentSource.fileUri!!)
     }
 
     private fun setupInteractionListeners() {
@@ -1204,9 +1223,6 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun _select(key: AnnotationKey?, didSelectInDocument: Boolean) {
-        if (key == viewState.selectedAnnotationKey) {
-            return
-        }
         val existing = viewState.selectedAnnotationKey
         if (existing != null) {
             if (viewState.sortedKeys.contains(existing)) {
@@ -1557,7 +1573,7 @@ class PdfReaderViewModel @Inject constructor(
 
 
     fun selectAnnotationFromDocument(key: AnnotationKey) {
-        if (!viewState.sidebarEditingEnabled && key != viewState.selectedAnnotationKey) {
+        if (!viewState.sidebarEditingEnabled) {
             _select(key = key, didSelectInDocument = true)
         }
     }
@@ -1898,7 +1914,7 @@ class PdfReaderViewModel @Inject constructor(
                     val pdfAnnotation =
                         document.annotation(annotationToReselect.page, annotationToReselect.key)
                     if (pdfAnnotation != null) {
-                        fragment.setSelectedAnnotation(pdfAnnotation)
+//                        fragment.setSelectedAnnotation(pdfAnnotation)
                     }
                 }
                 setupInteractionListeners()
@@ -1926,7 +1942,17 @@ class PdfReaderViewModel @Inject constructor(
             }
         })
         this@PdfReaderViewModel.fragment.addDocumentListener(pdfThumbnailBar.documentListener)
-        this.fragment.addOnAnnotationCreationModeChangeListener(object:
+        setOnPreparePopupToolbarListener()
+        addOnAnnotationCreationModeChangeListener()
+
+        fragmentManager.commit {
+            replace(containerId, this@PdfReaderViewModel.fragment)
+        }
+        updateVisibilityOfAnnotations()
+    }
+
+    private fun addOnAnnotationCreationModeChangeListener() {
+        this.fragment.addOnAnnotationCreationModeChangeListener(object :
             AnnotationManager.OnAnnotationCreationModeChangeListener {
             override fun onEnterAnnotationCreationMode(p0: AnnotationCreationController) {
                 set(true)
@@ -1941,11 +1967,6 @@ class PdfReaderViewModel @Inject constructor(
             }
 
         })
-
-        fragmentManager.commit {
-            replace(containerId, this@PdfReaderViewModel.fragment)
-        }
-        updateVisibilityOfAnnotations()
     }
 
     private fun toggleTopAndBottomBarVisibility() {
