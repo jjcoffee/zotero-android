@@ -24,7 +24,7 @@ import org.zotero.android.architecture.logging.debug.DebugLogging
 import org.zotero.android.architecture.logging.debug.DebugLoggingDialogData
 import org.zotero.android.architecture.logging.debug.DebugLoggingDialogDataEventStream
 import org.zotero.android.architecture.logging.debug.DebugLoggingInterface
-import org.zotero.android.database.DbWrapper
+import org.zotero.android.database.DbWrapperMain
 import org.zotero.android.database.objects.RCustomLibraryType
 import org.zotero.android.database.objects.RGroup
 import org.zotero.android.database.requests.DeleteGroupDbRequest
@@ -51,20 +51,22 @@ import org.zotero.android.sync.conflictresolution.ShowSimpleConflictResolutionDi
 import org.zotero.android.uicomponents.bottomsheet.LongPressOptionItem
 import org.zotero.android.uicomponents.bottomsheet.LongPressOptionsHolder
 import org.zotero.android.uicomponents.snackbar.SnackbarMessage
+import org.zotero.android.webdav.WebDavSessionStorage
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
-    private val dbWrapper: DbWrapper,
+    private val dbWrapperMain: DbWrapperMain,
     private val fileStore: FileStore,
     private val conflictResolutionUseCase: ConflictResolutionUseCase,
     private val debugLogging: DebugLogging,
     private val debugLoggingDialogDataEventStream: DebugLoggingDialogDataEventStream,
     private val crashShareDataEventStream: CrashShareDataEventStream,
     private val context: Context,
-    private val sessionController: SessionController
+    private val sessionController: SessionController,
+    private val sessionStorage: WebDavSessionStorage,
 ) : BaseViewModel2<DashboardViewState, DashboardViewEffect>(DashboardViewState()),
     DebugLoggingInterface {
 
@@ -117,8 +119,12 @@ class DashboardViewModel @Inject constructor(
                     }
 
                     is Conflict.groupFileWriteDenied -> {
-                        //TODO check for WebDav variable
-                        val domainName = "zotero.org"
+                        val domainName: String
+                        domainName = if (!sessionStorage.isEnabled) {
+                            "zotero.org"
+                        } else {
+                            sessionStorage.url
+                        }
 
                         ConflictDialogData.groupFileWriteDenied(
                             groupId = conflict.groupId,
@@ -186,7 +192,7 @@ class DashboardViewModel @Inject constructor(
         var library: Library? = null
 
         try {
-            dbWrapper.realmDbStorage.perform(coordinatorAction = { coordinator ->
+            dbWrapperMain.realmDbStorage.perform(coordinatorAction = { coordinator ->
                 when (collectionId) {
                     is CollectionIdentifier.collection -> {
                         val rCollection = coordinator.perform(
@@ -367,7 +373,7 @@ class DashboardViewModel @Inject constructor(
     fun deleteNonLocalGroup(groupId: Int) {
         viewModelScope.launch {
             perform(
-                dbWrapper = dbWrapper,
+                dbWrapper = dbWrapperMain,
                 DeleteGroupDbRequest(groupId = groupId)
             ).ifFailure {
                 Timber.e(it, "DashboardViewModel: can't delete group")
@@ -377,7 +383,7 @@ class DashboardViewModel @Inject constructor(
     }
 
     private fun listenToGroupDeletionEvents() {
-        dbWrapper.realmDbStorage.perform { coordinator ->
+        dbWrapperMain.realmDbStorage.perform { coordinator ->
             this.groupLibraries = coordinator.perform(request = ReadAllGroupsDbRequest())
 
             this.groupLibraries?.addChangeListener { _, changeSet ->

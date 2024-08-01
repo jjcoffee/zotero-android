@@ -87,7 +87,7 @@ class UploadFixSyncAction(
                 keys = listOf(this.key),
                 clazz = RItem::class
             )
-            dbWrapper.realmDbStorage.perform(listOf(markAsUploaded, markForResync))
+            dbWrapperMain.realmDbStorage.perform(listOf(markAsUploaded, markForResync))
             return CustomResult.GeneralSuccess(Unit)
         } catch (e: Exception) {
             return CustomResult.GeneralError.CodeError(e)
@@ -113,7 +113,7 @@ class UploadFixSyncAction(
         }
 
         try {
-            val item = dbWrapper.realmDbStorage.perform(
+            val item = dbWrapperMain.realmDbStorage.perform(
                 ReadItemDbRequest(
                     libraryId = this.libraryId,
                     key = this.key
@@ -128,7 +128,8 @@ class UploadFixSyncAction(
                 options = AttachmentCreator.Options.light,
                 fileStorage = this.fileStore,
                 urlDetector = null,
-                isForceRemote = false
+                isForceRemote = false,
+                defaults = this.defaults,
             )
             if (attachment == null) {
                 Timber.e("UploadFixSyncAction: item not attachment - ${item.rawType}")

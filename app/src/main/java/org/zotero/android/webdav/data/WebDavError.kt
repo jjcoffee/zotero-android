@@ -13,7 +13,7 @@ sealed class WebDavError {
         object invalidUrl: Verification()
         object notDav: Verification()
         object parentDirNotFound: Verification()
-        data class zoteroDirNotFound(val str: String): Verification()
+        data class zoteroDirNotFound(val url: String): Verification()
         object nonExistentFileNotMissing: Verification()
         object fileMissingAfterUpload: Verification()
 
@@ -59,8 +59,7 @@ sealed class WebDavError {
     sealed class Upload : Exception() {
         object cantCreatePropData : Upload()
 
-        // TODO network error
-        data class apiError(val error: Exception, val httpMethod: String?) : Upload()
+        data class apiError(val error: CustomResult.GeneralError.NetworkError, val httpMethod: String?) : Upload()
     }
 
     companion object {
@@ -91,15 +90,29 @@ sealed class WebDavError {
             }
         }
 
-        private fun errorMessage(context: Context, error: CustomResult.GeneralError.NetworkError): String? {
-            when(error.httpCode) {
-                401 -> {
-                    return context.getString(Strings.errors_settings_webdav_unauthorized)
+        private fun errorMessage(
+            context: Context,
+            error: CustomResult.GeneralError.NetworkError
+        ): String? {
+                when (error.httpCode) {
+                    401 -> {
+                        return context.getString(Strings.errors_settings_webdav_unauthorized)
+                    }
+                    400 -> {
+                        return error.stringResponse
+                    }
+                    403 -> {
+                        return context.getString(Strings.errors_settings_webdav_forbidden)
+                    }
+
                 }
-                403 -> {
-                    return context.getString(Strings.errors_settings_webdav_forbidden)
-                }
+            if (error.isNoNetworkError()) {
+                return context.getString(Strings.errors_settings_webdav_internet_connection)
             }
+            if (error.isNoCertificateFound()) {
+                return context.getString(Strings.errors_settings_webdav_no_https_certificate)
+            }
+
             return context.getString(Strings.errors_settings_webdav_host_not_found)
         }
 

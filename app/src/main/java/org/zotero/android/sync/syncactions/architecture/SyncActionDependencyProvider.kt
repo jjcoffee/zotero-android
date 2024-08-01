@@ -13,20 +13,23 @@ import org.zotero.android.api.mappers.PageIndexResponseMapper
 import org.zotero.android.api.mappers.SearchResponseMapper
 import org.zotero.android.api.mappers.SettingsResponseMapper
 import org.zotero.android.api.mappers.UpdatesResponseMapper
+import org.zotero.android.architecture.Defaults
 import org.zotero.android.attachmentdownloader.AttachmentDownloader
 import org.zotero.android.attachmentdownloader.AttachmentDownloaderEventStream
 import org.zotero.android.backgrounduploader.BackgroundUploaderContext
-import org.zotero.android.database.DbWrapper
+import org.zotero.android.database.DbWrapperMain
 import org.zotero.android.files.FileStore
 import org.zotero.android.sync.DateParser
 import org.zotero.android.sync.SchemaController
+import org.zotero.android.webdav.WebDavController
+import org.zotero.android.webdav.WebDavSessionStorage
 
 @EntryPoint
 @InstallIn(SingletonComponent::class)
 interface SyncActionDependencyProvider {
     fun syncApi(): SyncApi
     fun settingsResponseMapper(): SettingsResponseMapper
-    fun dbWrapper(): DbWrapper
+    fun dbWrapperMain(): DbWrapperMain
     fun gson(): Gson
     fun backgroundUploaderContext(): BackgroundUploaderContext
     fun fileStore(): FileStore
@@ -41,5 +44,8 @@ interface SyncActionDependencyProvider {
     fun noAuthenticationApi(): NoAuthenticationApi
     fun updatesResponseMapper(): UpdatesResponseMapper
     fun pageIndexResponseMapper(): PageIndexResponseMapper
+    fun webDavController(): WebDavController
+    fun webDavSessionStorage(): WebDavSessionStorage
+    fun defaults(): Defaults
 
 }

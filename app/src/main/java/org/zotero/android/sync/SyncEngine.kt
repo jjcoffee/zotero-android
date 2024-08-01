@@ -11,7 +11,7 @@ import org.zotero.android.api.mappers.SearchResponseMapper
 import org.zotero.android.api.network.CustomResult
 import org.zotero.android.architecture.Defaults
 import org.zotero.android.architecture.navigation.toolbar.data.SyncProgressHandler
-import org.zotero.android.database.DbWrapper
+import org.zotero.android.database.DbWrapperMain
 import org.zotero.android.database.objects.RCustomLibraryType
 import org.zotero.android.database.requests.MarkObjectsAsChangedByUser
 import org.zotero.android.database.requests.PerformDeletionsDbRequest
@@ -23,6 +23,7 @@ import org.zotero.android.sync.conflictresolution.Conflict
 import org.zotero.android.sync.conflictresolution.ConflictEventStream
 import org.zotero.android.sync.conflictresolution.ConflictResolution
 import org.zotero.android.sync.syncactions.DeleteGroupSyncAction
+import org.zotero.android.sync.syncactions.DeleteWebDavFilesSyncAction
 import org.zotero.android.sync.syncactions.FetchAndStoreGroupSyncAction
 import org.zotero.android.sync.syncactions.LoadDeletionsSyncAction
 import org.zotero.android.sync.syncactions.LoadLibraryDataSyncAction
@@ -44,6 +45,9 @@ import org.zotero.android.sync.syncactions.SyncVersionsSyncAction
 import org.zotero.android.sync.syncactions.UploadAttachmentSyncAction
 import org.zotero.android.sync.syncactions.UploadFixSyncAction
 import org.zotero.android.sync.syncactions.data.AccessPermissions
+import org.zotero.android.sync.syncactions.data.ZoteroApiError
+import org.zotero.android.webdav.WebDavSessionStorage
+import org.zotero.android.webdav.data.WebDavError
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -52,7 +56,7 @@ import javax.inject.Singleton
 class SyncUseCase @Inject constructor(
     private val syncRepository: SyncRepository,
     private val defaults: Defaults,
-    private val dbWrapper: DbWrapper,
+    private val dbWrapperMain: DbWrapperMain,
     private val syncApi: SyncApi,
     private val fileStore: FileStore,
     private val itemResponseMapper: ItemResponseMapper,
@@ -65,6 +69,7 @@ class SyncUseCase @Inject constructor(
     private val gson: Gson,
     private val conflictEventStream: ConflictEventStream,
     private val progressHandler: SyncProgressHandler,
+    private val sessionStorage: WebDavSessionStorage,
 ) {
     private var userId: Long = 0L
     private var libraryType: Libraries = Libraries.all
@@ -250,6 +255,9 @@ class SyncUseCase @Inject constructor(
             is Action.syncSettings -> {
                 this.progressHandler.reportLibrarySync(action.libraryId)
                 processSettingsSync(libraryId = action.libraryId, version = action.version)
+            }
+            is Action.performWebDavDeletions -> {
+                performWebDavDeletions(libraryId = action.libraryId)
             }
             else -> {
                 processNextAction()
@@ -454,7 +462,7 @@ class SyncUseCase @Inject constructor(
                 batches = batches,
                 userId = defaults.getUserId(),
                 syncApi = syncApi,
-                dbWrapper = this.dbWrapper,
+                dbWrapperMain = this.dbWrapperMain,
                 fileStore = this.fileStore,
                 itemResponseMapper = itemResponseMapper,
                 collectionResponseMapper = collectionResponseMapper,
@@ -655,14 +663,11 @@ class SyncUseCase @Inject constructor(
         options: CreateLibraryActionsOptions
     ) {
         try {
-            //TODO should use webDavController
             val result = LoadLibraryDataSyncAction(
                 type = libraries,
                 fetchUpdates = (options != CreateLibraryActionsOptions.onlyDownloads),
                 loadVersions = (this.type != SyncKind.full),
-                webDavEnabled = false,
-                dbStorage = dbWrapper.realmDbStorage,
-                defaults = defaults
+                webDavEnabled = sessionStorage.isEnabled,
             ).result()
             finishCreateLibraryActions(pair = result to options)
         } catch (e: Exception) {
@@ -989,6 +994,30 @@ class SyncUseCase @Inject constructor(
                     }
                 }
 
+                if (error is WebDavError.Verification) {
+                    return SyncError.nonFatal2(NonFatal.webDavVerification(error))
+                }
+
+                if (error is WebDavError.Download) {
+                    return SyncError.nonFatal2(NonFatal.webDavDownload(error))
+                }
+
+                if (error is WebDavError.Upload) {
+                    return SyncError.nonFatal2(NonFatal.webDavUpload(error))
+                }
+
+                if (error is ZoteroApiError) {
+                    when (error) {
+                        ZoteroApiError.unchanged -> {
+                            return SyncError.nonFatal2(NonFatal.unchanged)
+                        }
+                        is ZoteroApiError.responseMissing -> {
+                            return SyncError.nonFatal2(NonFatal.unknown(messageS = "missing response", data = data))
+                        }
+                    }
+                }
+
+
                 // Check realm errors, every "core" error is bad. Can't create new Realm instance, can't continue with sync
                 if (error is RealmError) {
                     Timber.e("received realm error - $error")
@@ -1011,14 +1040,9 @@ class SyncUseCase @Inject constructor(
 
             }
             is CustomResult.GeneralError.NetworkError -> {
-                // TODO handle web dav errors
-
-                //TODO handle reportMissing
                 if (customResultError.isUnchanged()) {
                     return SyncError.nonFatal2(NonFatal.unchanged)
                 }
-
-
                 return convertNetworkToSyncError(
                     customResultError,
                     response = customResultError.stringResponse ?: "No Response",
@@ -1245,7 +1269,7 @@ class SyncUseCase @Inject constructor(
             when (libraryId) {
                 is LibraryIdentifier.group -> {
                     val name =
-                        dbWrapper.realmDbStorage.perform(request = ReadGroupDbRequest(identifier = libraryId.groupId)).name
+                        dbWrapperMain.realmDbStorage.perform(request = ReadGroupDbRequest(identifier = libraryId.groupId)).name
                     enqueue(
                         actions = listOf(
                             Action.resolveGroupFileWritePermission(
@@ -1277,6 +1301,7 @@ class SyncUseCase @Inject constructor(
         libraryId: LibraryIdentifier,
         objectS: SyncObject,
         failedBeforeReachingApi: Boolean = false,
+        ignoreWebDav: Boolean = false,
     ) {
         val nextAction = suspend {
             if (newVersion != null) {
@@ -1290,7 +1315,21 @@ class SyncUseCase @Inject constructor(
             return
         }
 
-        //TODO handle WebDav
+        if (!ignoreWebDav &&
+            handleZoteroDirectoryMissing(error, continueExec = {
+                finishSubmission(
+                    error = error,
+                    newVersion = newVersion,
+                    keys = keys,
+                    libraryId = libraryId,
+                    objectS = objectS,
+                    failedBeforeReachingApi = failedBeforeReachingApi,
+                    ignoreWebDav = true
+                )
+            })
+        ) {
+            return
+        }
 
         val syncActionError = (error as? CustomResult.GeneralError.CodeError)?.throwable
                 as? SyncActionError
@@ -1475,10 +1514,10 @@ class SyncUseCase @Inject constructor(
                         retryLibraries.add(error.libraryId)
                     }
                 }
-                //TODO handle webDavVerification && webDavDownload
                 is NonFatal.unknown, is NonFatal.schema, is NonFatal.parsing, is NonFatal.apiError,
                 is NonFatal.unchanged, is NonFatal.quotaLimit, is NonFatal.attachmentMissing,
-                is NonFatal.insufficientSpace, is NonFatal.webDavDeletion, is NonFatal.webDavDeletionFailed, is NonFatal.webDavUpload ->
+                is NonFatal.insufficientSpace, is NonFatal.webDavDeletion, is NonFatal.webDavDeletionFailed,
+                is NonFatal.webDavUpload, is NonFatal.webDavDownload, is NonFatal.webDavVerification ->
                 reportErrors.add(error)
             }
         }
@@ -1767,7 +1806,7 @@ class SyncUseCase @Inject constructor(
             version = batch.version,
             libraryId = batch.libraryId,
             userId = this.userId,
-            webDavEnabled = false,//TODO WebDav pass variable
+            webDavEnabled = sessionStorage.isEnabled,
         ).result()
 
         if (actionResult !is CustomResult.GeneralSuccess) {
@@ -1837,7 +1876,7 @@ class SyncUseCase @Inject constructor(
                     is LibraryIdentifier.group -> {
                         val groupId = libraryId.groupId
                         val name =
-                            dbWrapper.realmDbStorage.perform(
+                            dbWrapperMain.realmDbStorage.perform(
                                 request = ReadGroupDbRequest
                                     (identifier = groupId)
                             ).name
@@ -1922,12 +1961,65 @@ class SyncUseCase @Inject constructor(
         )
 
         try {
-            dbWrapper.realmDbStorage.perform(request = request)
+            dbWrapperMain.realmDbStorage.perform(request = request)
         } catch (error: Exception) {
             Timber.e(error, "SyncController: can't mark item for upload")
             throw error
         }
     }
 
+    private suspend fun performWebDavDeletions(libraryId: LibraryIdentifier) {
+        val result = DeleteWebDavFilesSyncAction(libraryId = libraryId).result()
+        when (result) {
+            is CustomResult.GeneralSuccess -> {
+                val failures = result.value!!
+                if (failures.isEmpty()) {
+                    processNextAction()
+                } else {
+                    handleNonFatal(
+                        error = NonFatal.webDavDeletion(
+                            count = failures.size,
+                            library = libraryId.debugName
+                        ), libraryId = libraryId, version = null
+                    )
+                }
+            }
+
+            is CustomResult.GeneralError -> {
+                handleWebDavDeletions(error = result, libraryId = libraryId)
+            }
+        }
+    }
+
+    private suspend fun handleWebDavDeletions(error: CustomResult.GeneralError, libraryId: LibraryIdentifier, ignoreWebDav: Boolean = false) {
+        if (!ignoreWebDav && handleZoteroDirectoryMissing(error, continueExec = { handleWebDavDeletions(error = error, libraryId = libraryId, ignoreWebDav=  true) })) {
+            return
+        }
+        val localizedDescription = when (error) {
+            is CustomResult.GeneralError.CodeError -> {
+                error.throwable.localizedMessage!!
+            }
+
+            is CustomResult.GeneralError.NetworkError -> {
+                error.stringResponse!!
+            }
+        }
+        handleNonFatal(error = NonFatal.webDavDeletionFailed(error = localizedDescription, library = libraryId.debugName), libraryId = libraryId, version = null)
+
+    }
+
+    private suspend fun handleZoteroDirectoryMissing(
+        error: CustomResult.GeneralError,
+        continueExec: suspend () -> Unit
+    ): Boolean {
+        val zoteroDirNotFoundError =
+            (error as? CustomResult.GeneralError.CodeError)?.throwable as? WebDavError.Verification.zoteroDirNotFound
+        if (zoteroDirNotFoundError == null) {
+            return false
+        }
+        //TODO implement WebDav askToCreateZoteroDirectory
+        continueExec()
+        return true
+    }
 
 }

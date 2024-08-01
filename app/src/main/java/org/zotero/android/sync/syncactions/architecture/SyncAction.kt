@@ -17,8 +17,8 @@ abstract class SyncAction {
         bindings.settingsResponseMapper()
     }
 
-    val dbWrapper by lazy {
-        bindings.dbWrapper()
+    val dbWrapperMain by lazy {
+        bindings.dbWrapperMain()
     }
 
     val gson by lazy {
@@ -74,5 +74,17 @@ abstract class SyncAction {
 
     val pageIndexResponseMapper by lazy {
         bindings.pageIndexResponseMapper()
+    }
+
+    val webDavController by lazy {
+        bindings.webDavController()
+    }
+
+    val sessionStorage by lazy {
+        bindings.webDavSessionStorage()
+    }
+
+    val defaults by lazy {
+        bindings.defaults()
     }
 }

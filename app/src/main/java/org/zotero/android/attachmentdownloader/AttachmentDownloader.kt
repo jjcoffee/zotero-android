@@ -6,12 +6,14 @@ import kotlinx.coroutines.async
 import org.zotero.android.api.NoRedirectApi
 import org.zotero.android.api.SyncApi
 import org.zotero.android.api.network.CustomResult
-import org.zotero.android.database.DbWrapper
+import org.zotero.android.database.DbWrapperMain
 import org.zotero.android.database.objects.Attachment
 import org.zotero.android.database.requests.MarkFileAsDownloadedDbRequest
 import org.zotero.android.files.FileStore
 import org.zotero.android.helpers.Unzipper
 import org.zotero.android.sync.LibraryIdentifier
+import org.zotero.android.webdav.WebDavController
+import org.zotero.android.webdav.WebDavSessionStorage
 import timber.log.Timber
 import java.io.File
 import javax.inject.Inject
@@ -22,10 +24,12 @@ class AttachmentDownloader @Inject constructor(
     private val syncApi: SyncApi,
     private val noRedirectApi: NoRedirectApi,
     private val fileStorage: FileStore,
-    private val dbWrapper: DbWrapper,
+    private val dbWrapperMain: DbWrapperMain,
     private val attachmentDownloaderEventStream: AttachmentDownloaderEventStream,
     private val dispatcher: CoroutineDispatcher,
     private val unzipper: Unzipper,
+    private val webDavController: WebDavController,
+    private val sessionStorage: WebDavSessionStorage,
 ) {
     sealed class Error : Exception() {
         object incompatibleAttachment : Error()
@@ -255,6 +259,8 @@ class AttachmentDownloader @Inject constructor(
             syncApi = syncApi,
             noRedirectApi = this.noRedirectApi,
             unzipper = this.unzipper,
+            webDavController = webDavController,
+            sessionStorage = sessionStorage
         )
         operation.onDownloadProgressUpdated = object : OnDownloadProgressUpdated {
             override fun onProgressUpdated(progressInHundreds: Int) {
@@ -281,7 +287,7 @@ class AttachmentDownloader @Inject constructor(
                     )
                 }
                 is CustomResult.GeneralSuccess -> {
-                    dbWrapper.realmDbStorage.perform(
+                    dbWrapperMain.realmDbStorage.perform(
                         request = MarkFileAsDownloadedDbRequest(
                             key = download.key,
                             libraryId = download.libraryId,
