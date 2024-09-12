@@ -348,11 +348,22 @@ internal class SettingsAccountViewModel @Inject constructor(
     }
 
     private fun verify(tryCreatingZoteroDir: Boolean) {
+        if (viewState.scheme == WebDavScheme.http && !isAllowedHttpHost()) {
+            updateState {
+                copy(
+                    webDavVerificationResult = CustomResult.GeneralError.CodeError(WebDavError.Verification.localHttpWebdavHostNotAllowed),
+                    isVerifyingWebDav = false
+                )
+            }
+            return
+        }
+
         if (!viewState.isVerifyingWebDav) {
             updateState {
                 copy(isVerifyingWebDav = true)
             }
         }
+
         coroutineScope.launch {
             if (tryCreatingZoteroDir) {
                 val createZoteroDirectoryResult = webDavController.createZoteroDirectory()
@@ -383,6 +394,20 @@ internal class SettingsAccountViewModel @Inject constructor(
 
         }
 
+    }
+
+    private fun isAllowedHttpHost(): Boolean {
+        try {
+            val hostComponentsWithPort = sessionStorage.url.split(":")
+            val hostComponentsWithSlashes = hostComponentsWithPort.firstOrNull()?.split("/")
+            val host = hostComponentsWithSlashes?.firstOrNull()
+            if (host != null && (host.endsWith("local") || host.endsWith("home.arpa"))) {
+                return true
+            }
+        } catch (e: Exception) {
+            //no-op
+        }
+        return false
     }
 
     private fun handleVerification(error: CustomResult.GeneralError) {
@@ -441,6 +466,22 @@ internal class SettingsAccountViewModel @Inject constructor(
         }
     }
 
+    fun onShowSignOutDialog() {
+        updateState {
+            copy(
+                shouldShowSignOutDialog = true,
+            )
+        }
+    }
+
+    fun onDismissSignOutDialog() {
+        updateState {
+            copy(
+                shouldShowSignOutDialog = false,
+            )
+        }
+    }
+
     fun onCreateWebDavDirectory() {
         verify(tryCreatingZoteroDir = true)
     }
@@ -458,6 +499,7 @@ internal data class SettingsAccountViewState(
     val isVerifyingWebDav: Boolean = false,
     val webDavVerificationResult: CustomResult<Unit>? = null,
     val createWebDavDirectoryDialogData: CreateWebDavDirectoryDialogData? = null,
+    val shouldShowSignOutDialog: Boolean = false
 ) : ViewState {
     val canVerifyServer: Boolean get() {
         return !url.isEmpty() && !username.isEmpty() && !password.isEmpty()

@@ -3,10 +3,12 @@ package org.zotero.android.database
 import io.realm.DynamicRealm
 import io.realm.FieldAttribute
 import io.realm.RealmConfiguration
+import io.realm.RealmMigration
 import io.realm.annotations.RealmModule
 import org.zotero.android.database.objects.AllItemsDbRow
 import org.zotero.android.database.objects.FieldKeys
 import org.zotero.android.database.objects.ItemTypes
+import org.zotero.android.database.objects.ObjectSyncState
 import org.zotero.android.database.objects.RCollection
 import org.zotero.android.database.objects.RCondition
 import org.zotero.android.database.objects.RCreator
@@ -29,12 +31,11 @@ import org.zotero.android.database.objects.RUser
 import org.zotero.android.database.objects.RVersions
 import org.zotero.android.database.objects.RWebDavDeletion
 import org.zotero.android.database.requests.key
-import org.zotero.android.files.FileStore
 import java.io.File
 
 class Database {
     companion object {
-        private const val schemaVersion = 2L //From now on must only increase by 1 whenever db schema changes
+        private const val schemaVersion = 3L //From now on must only increase by 1 whenever db schema changes
 
         fun mainConfiguration(dbFile: File): RealmConfiguration {
             val builder = RealmConfiguration.Builder()
@@ -43,13 +44,44 @@ class Database {
                 .modules(MainConfigurationDbModule())
                 .schemaVersion(schemaVersion)
                 .allowWritesOnUiThread(true)
-                .migration { dynamicRealm, oldVersion, newVersion ->
-                    if (oldVersion < 2) {
-                        migrateAllItemsDbRowTypeIconNameTypeChange(dynamicRealm)
-                    }
-                }
+                .migration(MainDbMigration(fileName = dbFile.name))
 
             return builder.build()
+        }
+
+        internal class MainDbMigration(private val fileName: String): RealmMigration {
+            override fun migrate(dynamicRealm: DynamicRealm, oldVersion: Long, newVersion: Long) {
+                if (oldVersion < 2) {
+                    migrateAllItemsDbRowTypeIconNameTypeChange(dynamicRealm)
+                }
+                if (oldVersion < 3) {
+                    markAllNonLocalGroupsAsOutdatedToTriggerResync(dynamicRealm)
+                }
+            }
+
+            override fun equals(other: Any?): Boolean {
+                if (this === other) return true
+                if (javaClass != other?.javaClass) return false
+
+                other as MainDbMigration
+
+                return fileName == other.fileName
+            }
+
+            override fun hashCode(): Int {
+                return fileName.hashCode()
+            }
+
+        }
+
+        private fun markAllNonLocalGroupsAsOutdatedToTriggerResync(dynamicRealm: DynamicRealm) {
+            val groups = dynamicRealm
+                .where(RGroup::class.java.simpleName)
+                .equalTo("isLocalOnly", false)
+                .findAll()
+            for (group in groups) {
+                group.setString("syncState", ObjectSyncState.outdated.name)
+            }
         }
 
         private fun migrateAllItemsDbRowTypeIconNameTypeChange(dynamicRealm: DynamicRealm) {

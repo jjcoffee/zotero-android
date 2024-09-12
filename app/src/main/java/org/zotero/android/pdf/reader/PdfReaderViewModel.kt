@@ -5,19 +5,17 @@ import android.graphics.PointF
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Handler
-import android.transition.Fade
-import android.transition.Transition
-import android.transition.TransitionManager
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.isVisible
 import androidx.fragment.app.FragmentManager
 import androidx.fragment.app.commit
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.pspdfkit.R
 import com.pspdfkit.annotations.Annotation
 import com.pspdfkit.annotations.AnnotationFlags
 import com.pspdfkit.annotations.AnnotationProvider
@@ -27,21 +25,24 @@ import com.pspdfkit.annotations.HighlightAnnotation
 import com.pspdfkit.annotations.InkAnnotation
 import com.pspdfkit.annotations.NoteAnnotation
 import com.pspdfkit.annotations.SquareAnnotation
+import com.pspdfkit.annotations.actions.GoToAction
 import com.pspdfkit.annotations.configuration.EraserToolConfiguration
 import com.pspdfkit.annotations.configuration.InkAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.MarkupAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.NoteAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.ShapeAnnotationConfiguration
-import com.pspdfkit.configuration.PdfConfiguration
+import com.pspdfkit.configuration.activity.PdfActivityConfiguration
 import com.pspdfkit.configuration.page.PageFitMode
 import com.pspdfkit.configuration.page.PageScrollMode
 import com.pspdfkit.configuration.theming.ThemeMode
+import com.pspdfkit.document.OutlineElement
 import com.pspdfkit.document.PdfDocument
 import com.pspdfkit.document.PdfDocumentLoader
 import com.pspdfkit.listeners.DocumentListener
 import com.pspdfkit.preferences.PSPDFKitPreferences
 import com.pspdfkit.ui.PdfFragment
-import com.pspdfkit.ui.PdfThumbnailBar
+import com.pspdfkit.ui.PdfUiFragment
+import com.pspdfkit.ui.PdfUiFragmentBuilder
 import com.pspdfkit.ui.special_mode.controller.AnnotationCreationController
 import com.pspdfkit.ui.special_mode.controller.AnnotationSelectionController
 import com.pspdfkit.ui.special_mode.controller.AnnotationTool
@@ -49,9 +50,13 @@ import com.pspdfkit.ui.special_mode.manager.AnnotationManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.realm.OrderedCollectionChangeSet
 import io.realm.RealmResults
+import kotlinx.collections.immutable.ImmutableList
+import kotlinx.collections.immutable.persistentListOf
+import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -123,6 +128,14 @@ import org.zotero.android.pdf.data.PdfAnnotationChanges
 import org.zotero.android.pdf.data.PdfReaderArgs
 import org.zotero.android.pdf.data.PdfReaderCurrentThemeEventStream
 import org.zotero.android.pdf.data.PdfReaderThemeDecider
+import org.zotero.android.pdf.reader.sidebar.data.Outline
+import org.zotero.android.pdf.reader.sidebar.data.PdfReaderOutlineOptionsWithChildren
+import org.zotero.android.pdf.reader.sidebar.data.PdfReaderSliderOptions
+import org.zotero.android.pdf.reader.sidebar.data.PdfReaderThumbnailRow
+import org.zotero.android.pdf.reader.sidebar.data.ThumbnailPreviewCacheUpdatedEventStream
+import org.zotero.android.pdf.reader.sidebar.data.ThumbnailPreviewManager
+import org.zotero.android.pdf.reader.sidebar.data.ThumbnailPreviewMemoryCache
+import org.zotero.android.pdf.reader.sidebar.data.ThumbnailsPreviewFileCache
 import org.zotero.android.pdf.settings.data.PdfSettingsArgs
 import org.zotero.android.pdf.settings.data.PdfSettingsChangeResult
 import org.zotero.android.pdffilter.data.PdfFilterArgs
@@ -152,29 +165,35 @@ class PdfReaderViewModel @Inject constructor(
     private val pdfReaderCurrentThemeEventStream: PdfReaderCurrentThemeEventStream,
     private val pdfReaderThemeDecider: PdfReaderThemeDecider,
     private val annotationPreviewManager: AnnotationPreviewManager,
-    private val fileCache: AnnotationPreviewFileCache,
+    private val annotationPreviewFileCache: AnnotationPreviewFileCache,
+    private val thumbnailPreviewManager: ThumbnailPreviewManager,
+    private val thumbnailsPreviewFileCache: ThumbnailsPreviewFileCache,
+    override val thumbnailPreviewMemoryCache: ThumbnailPreviewMemoryCache,
     private val context: Context,
     private val annotationPreviewCacheUpdatedEventStream: AnnotationPreviewCacheUpdatedEventStream,
-    val annotationPreviewMemoryCache: AnnotationPreviewMemoryCache,
+    private val thumbnailPreviewCacheUpdatedEventStream: ThumbnailPreviewCacheUpdatedEventStream,
+    override val annotationPreviewMemoryCache: AnnotationPreviewMemoryCache,
     private val schemaController: SchemaController,
     private val dateParser: DateParser,
     private val navigationParamsMarshaller: NavigationParamsMarshaller,
     stateHandle: SavedStateHandle,
-) : BaseViewModel2<PdfReaderViewState, PdfReaderViewEffect>(PdfReaderViewState()) {
+) : BaseViewModel2<PdfReaderViewState, PdfReaderViewEffect>(PdfReaderViewState()), PdfReaderVMInterface {
 
     private var liveAnnotations: RealmResults<RItem>? = null
     private var databaseAnnotations: RealmResults<RItem>? = null
     private lateinit var annotationBoundingBoxConverter: AnnotationBoundingBoxConverter
     private var containerId = 0
-    private lateinit var fragment: PdfFragment
+    private lateinit var uri: Uri
+    private lateinit var pdfUiFragment: PdfUiFragment
+    private lateinit var pdfFragment: PdfFragment
     private var onAnnotationUpdatedListener: AnnotationProvider.OnAnnotationUpdatedListener? = null
     private lateinit var document: PdfDocument
     private lateinit var rawDocument: PdfDocument
     var comments = mutableMapOf<String, String>()
-    private val onSearchStateFlow = MutableStateFlow("")
+    private val onAnnotationSearchStateFlow = MutableStateFlow("")
+    private val onOutlineSearchStateFlow = MutableStateFlow("")
     private val onCommentChangeFlow = MutableStateFlow<Pair<String, String>?>(null)
     private lateinit var fragmentManager: FragmentManager
-    private lateinit var pdfThumbnailBar: PdfThumbnailBar
     private var isTablet: Boolean = false
 
     private val handler = Handler(context.mainLooper)
@@ -182,9 +201,9 @@ class PdfReaderViewModel @Inject constructor(
     //Used to recreate a new fragment preserving viewport state
     private lateinit var pdfDocumentBeforeFragmentDestruction: PdfDocument
 
-    var annotationMaxSideSize = 0
+    override var annotationMaxSideSize = 0
 
-    var toolColors: MutableMap<AnnotationTool, String> = mutableMapOf()
+    override var toolColors: MutableMap<AnnotationTool, String> = mutableMapOf()
     var changedColorForTool: AnnotationTool? = null
     var activeLineWidth: Float = 0.0f
     var activeEraserSize: Float = 0.0f
@@ -194,6 +213,20 @@ class PdfReaderViewModel @Inject constructor(
     val screenArgs: PdfReaderArgs by lazy {
         val argsEncoded = stateHandle.get<String>(ARG_PDF_SCREEN).require()
         navigationParamsMarshaller.decodeObjectFromBase64(argsEncoded)
+    }
+
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun onUserInterfaceVisibilityChanged(event: OnUserInterfaceVisibilityChangedEvent) {
+        toggleTopAndBottomBarVisibility(event.isVisible)
+    }
+
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun onPdfPageScrolled(event: OnPdfPageScrolled) {
+        triggerEffect(PdfReaderViewEffect.ScrollThumbnailListToIndex(event.pageIndex))
+        val row = viewState.thumbnailRows.firstOrNull { it.pageIndex == event.pageIndex }
+        updateState {
+            copy(selectedThumbnail = row)
+        }
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
@@ -224,7 +257,7 @@ class PdfReaderViewModel @Inject constructor(
             // Unfortunately PSPDFKIT's onAnnotationSelected method is not triggered when user is selecting the same annotation again. Because technically the same annotation just stays selected.
             // That's why after finishing annotation editing we have to make PSPDFKIT to deselect the currently selected annotation.
             // Drawback to this is that of course visually annotation gets deselected as well.
-            this.fragment.clearSelectedAnnotations()
+            this.pdfFragment.clearSelectedAnnotations()
         }
     }
 
@@ -293,7 +326,7 @@ class PdfReaderViewModel @Inject constructor(
         defaults.setPDFSettings(pdfSettings)
         pdfReaderThemeDecider.setPdfPageAppearanceMode(pdfSettings.appearanceMode)
         if (isTablet) {
-            pdfDocumentBeforeFragmentDestruction = fragment.document!!
+            pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
             replaceFragment()
         }
     }
@@ -303,28 +336,45 @@ class PdfReaderViewModel @Inject constructor(
     private fun startObservingTheme() {
         this.pdfReaderThemeCancellable = pdfReaderCurrentThemeEventStream.flow()
             .onEach { data ->
+                val isDark = data!!.isDark
                 updateState {
-                    copy(isDark = data!!.isDark)
+                    copy(isDark = isDark)
                 }
+                thumbnailPreviewMemoryCache.clear()
+                triggerEffect(PdfReaderViewEffect.ScreenRefresh)
             }
             .launchIn(viewModelScope)
     }
 
-    fun init(
+    class CustomPdfUiFragment: PdfUiFragment() {
+        override fun onUserInterfaceVisibilityChanged(visible: Boolean) {
+            super.onUserInterfaceVisibilityChanged(visible)
+            EventBus.getDefault().post(OnUserInterfaceVisibilityChangedEvent(visible))
+        }
+
+        override fun onPageChanged(document: PdfDocument, pageIndex: Int) {
+            super.onPageChanged(document, pageIndex)
+            EventBus.getDefault().post(OnPdfPageScrolled(pageIndex))
+        }
+    }
+
+    data class OnUserInterfaceVisibilityChangedEvent(val isVisible: Boolean)
+    data class OnPdfPageScrolled(val pageIndex: Int)
+
+    override fun init(
         uri: Uri,
         annotationMaxSideSize: Int,
         containerId: Int,
         fragmentManager: FragmentManager,
         isTablet: Boolean,
-        pdfThumbnailBar: PdfThumbnailBar,
     ) {
+        this.uri = uri
         this.isTablet = isTablet
         this.fragmentManager = fragmentManager
-        this.pdfThumbnailBar = pdfThumbnailBar
         this.containerId = containerId
         this.annotationMaxSideSize = annotationMaxSideSize
 
-        if (this::fragment.isInitialized) {
+        if (this::pdfUiFragment.isInitialized) {
             replaceFragment()
             return
         }
@@ -334,14 +384,40 @@ class PdfReaderViewModel @Inject constructor(
         initState()
         startObservingTheme()
         setupAnnotationCacheUpdateStream()
-        setupSearchStateFlow()
+        setupThumbnailCacheUpdateStream()
+        setupAnnotationSearchStateFlow()
+        setupOutlineSearchStateFlow()
         setupCommentChangeFlow()
 
         val pdfSettings = defaults.getPDFSettings()
         pdfReaderThemeDecider.setPdfPageAppearanceMode(pdfSettings.appearanceMode)
         val configuration = generatePdfConfiguration(pdfSettings)
-        this@PdfReaderViewModel.fragment = PdfFragment.newInstance(uri, configuration)
-        this@PdfReaderViewModel.fragment.addDocumentListener(object : DocumentListener {
+        this@PdfReaderViewModel.pdfUiFragment = PdfUiFragmentBuilder
+            .fromUri(context, uri)
+            .fragmentClass(CustomPdfUiFragment::class.java)
+            .configuration(configuration)
+            .build()
+        this@PdfReaderViewModel.pdfUiFragment.lifecycle.addObserver(object: DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                this@PdfReaderViewModel.pdfFragment = pdfUiFragment.pdfFragment!!
+                addDocumentListenerOnInit()
+                addOnAnnotationCreationModeChangeListener()
+                setOnPreparePopupToolbarListener()
+            }
+
+            override fun onDestroy(owner: LifecycleOwner) {
+                pdfUiFragment.lifecycle.removeObserver(this)
+            }
+        })
+
+        fragmentManager.commit {
+            add(containerId, this@PdfReaderViewModel.pdfUiFragment)
+        }
+    }
+
+    private fun addDocumentListenerOnInit() {
+        this@PdfReaderViewModel.pdfFragment.addDocumentListener(object :
+            DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
                 this@PdfReaderViewModel.onDocumentLoaded(document)
             }
@@ -353,21 +429,13 @@ class PdfReaderViewModel @Inject constructor(
                 pagePosition: PointF?,
                 clickedAnnotation: Annotation?
             ): Boolean {
-                toggleTopAndBottomBarVisibility()
                 return false
             }
         })
-
-        this@PdfReaderViewModel.fragment.addDocumentListener(pdfThumbnailBar.documentListener)
-        addOnAnnotationCreationModeChangeListener()
-        setOnPreparePopupToolbarListener()
-        fragmentManager.commit {
-            add(containerId, this@PdfReaderViewModel.fragment)
-        }
     }
 
     private fun setOnPreparePopupToolbarListener() {
-        this.fragment.setOnPreparePopupToolbarListener { toolbar ->
+        this.pdfFragment.setOnPreparePopupToolbarListener { toolbar ->
             val sourceItems = toolbar.menuItems
             val menuItems = sourceItems.listIterator()
 
@@ -415,13 +483,36 @@ class PdfReaderViewModel @Inject constructor(
         loadRawDocument()
         loadDocumentData()
         setupInteractionListeners()
+        loadOutlines()
+        loadThumbnails()
     }
 
-    private fun setupSearchStateFlow() {
-        onSearchStateFlow
+    private fun loadThumbnails() {
+        val rows = mutableListOf<PdfReaderThumbnailRow>()
+        for (i in 0..<document.pageCount) {
+            rows.add(
+                PdfReaderThumbnailRow(
+                    pageIndex = i,
+                    title = this.document.getPageLabel(i, true)
+                )
+            )
+        }
+        updateState {
+            copy(thumbnailRows = rows.toImmutableList())
+        }
+
+    }
+
+    private fun loadOutlines() {
+        createSnapshot("")
+        updateState { copy(isOutlineEmpty = document.outline.isEmpty()) }
+    }
+
+    private fun setupAnnotationSearchStateFlow() {
+        onAnnotationSearchStateFlow
             .debounce(150)
             .map { text ->
-                search(text)
+                searchAnnotations(text)
             }
             .launchIn(viewModelScope)
     }
@@ -451,13 +542,31 @@ class PdfReaderViewModel @Inject constructor(
             .launchIn(viewModelScope)
     }
 
+    private fun setupThumbnailCacheUpdateStream() {
+        thumbnailPreviewCacheUpdatedEventStream.flow()
+            .onEach { pageIndex ->
+                val existingRow = viewState.thumbnailRows.firstOrNull { it.pageIndex == pageIndex }
+                if (existingRow != null) {
+                    val updatedRow = existingRow.copyAndUpdateLoadedState()
+                    val modifiedList = viewState.thumbnailRows.toMutableList()
+                    val indexToReplace = modifiedList.indexOf(existingRow)
+                    modifiedList[indexToReplace] = updatedRow
+                    updateState {
+                        copy(thumbnailRows = modifiedList.toImmutableList())
+                    }
+                }
+                triggerEffect(PdfReaderViewEffect.ScreenRefresh)
+            }
+            .launchIn(viewModelScope)
+    }
+
     private fun loadRawDocument() {
         this.rawDocument =
             PdfDocumentLoader.openDocument(context, this.document.documentSource.fileUri!!)
     }
 
     private fun setupInteractionListeners() {
-        fragment.addOnAnnotationSelectedListener(object :
+        pdfFragment.addOnAnnotationSelectedListener(object :
             AnnotationManager.OnAnnotationSelectedListener {
             override fun onPrepareAnnotationSelection(
                 p0: AnnotationSelectionController,
@@ -476,12 +585,9 @@ class PdfReaderViewModel @Inject constructor(
             }
 
         })
-        fragment.addOnAnnotationDeselectedListener { annotation, _ ->
+        pdfFragment.addOnAnnotationDeselectedListener { annotation, _ ->
             deselectSelectedAnnotation(annotation)
         }
-        pdfThumbnailBar.setOnPageChangedListener { _, pageIndex: Int -> fragment.pageIndex = pageIndex }
-        pdfThumbnailBar.setDocument(document, fragment.configuration)
-        pdfThumbnailBar.isVisible = viewState.isTopBarVisible
     }
 
     private fun initState() {
@@ -647,7 +753,7 @@ class PdfReaderViewModel @Inject constructor(
                     )
                 }
 
-                this.fragment.pageIndex = page
+                this.pdfUiFragment.pageIndex = page
 
                 if (selectedData != null) {
                     val (key, location) = selectedData
@@ -694,7 +800,7 @@ class PdfReaderViewModel @Inject constructor(
                 //no-op
             }
         }
-        fragment.addOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+        pdfFragment.addOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
     }
 
     private fun change(annotation: Annotation, changes: List<String>) {
@@ -710,6 +816,13 @@ class PdfReaderViewModel @Inject constructor(
             libraryId = viewState.library.identifier,
             isDark = viewState.isDark,
             annotationMaxSideSize = this.annotationMaxSideSize
+        )
+        thumbnailPreviewManager.store(
+            pageIndex = annotation.pageIndex,
+            key = viewState.key,
+            document = this.document,
+            libraryId = viewState.library.identifier,
+            isDark = viewState.isDark,
         )
 
         val hasChanges: (List<PdfAnnotationChanges>) -> Boolean = hasChangesScope@{ pdfChanges ->
@@ -812,7 +925,7 @@ class PdfReaderViewModel @Inject constructor(
             }
         }
 
-        fragment.notifyAnnotationHasChanged(annotation)
+        pdfFragment.notifyAnnotationHasChanged(annotation)
         //TODO
     }
 
@@ -1147,7 +1260,7 @@ class PdfReaderViewModel @Inject constructor(
             })
             keys.add(element = key, index = index)
         }
-        fragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+        pdfFragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
 
         for ((pdfAnnotation, annotation) in updatedPdfAnnotations) {
             update(
@@ -1188,6 +1301,18 @@ class PdfReaderViewModel @Inject constructor(
                 )
             }
         }
+        val pageIndicesForThumbnails =
+            (deletedPdfAnnotations.map { it.pageIndex } + insertedPdfAnnotations.map { it.pageIndex }).toSet()
+        pageIndicesForThumbnails.forEach { pageIndex ->
+            thumbnailPreviewManager.store(
+                pageIndex = pageIndex,
+                key = viewState.key,
+                document = this.document,
+                libraryId = viewState.library.identifier,
+                isDark = viewState.isDark,
+            )
+        }
+
         observeDocument()
         this.comments = comments
         this.databaseAnnotations = objects.freeze()
@@ -1286,6 +1411,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun updateAnnotationsList(forceNotShowAnnotationPopup: Boolean = false) {
+        hidePspdfkitToolbars()
         val showAnnotationPopup = !forceNotShowAnnotationPopup && !viewState.showSideBar && selectedAnnotation != null
         if (showAnnotationPopup) {
             ScreenArguments.pdfAnnotationArgs = PdfAnnotationArgs(
@@ -1302,6 +1428,18 @@ class PdfReaderViewModel @Inject constructor(
                 showAnnotationPopup
             )
         )
+
+    }
+
+    private fun hidePspdfkitToolbars() {
+        handler.postDelayed({
+            val editingToolbarView = pdfUiFragment
+                .view?.rootView?.findViewById<View>(R.id.pspdf__annotation_editing_toolbar)
+            editingToolbarView?.visibility = View.GONE
+            val creationToolbarView = pdfUiFragment
+                .view?.rootView?.findViewById<View>(R.id.pspdf__annotation_creation_toolbar)
+            creationToolbarView?.visibility = View.GONE
+        }, 200)
     }
 
     private fun selectAndFocusAnnotationInDocument() {
@@ -1310,13 +1448,17 @@ class PdfReaderViewModel @Inject constructor(
             val location = viewState.focusDocumentLocation
             if (location != null) {
                 focus(annotation = annotation, location = location, document = this.document)
-            } else if (annotation.type != org.zotero.android.database.objects.AnnotationType.ink || fragment.activeAnnotationTool?.toAnnotationType() != AnnotationType.INK) {
-                val pageIndex = fragment.pageIndex
+            } else if (annotation.type != org.zotero.android.database.objects.AnnotationType.ink || pdfFragment.activeAnnotationTool?.toAnnotationType() != AnnotationType.INK) {
+                val pageIndex = pdfUiFragment.pageIndex
                 select(annotation = annotation, pageIndex = pageIndex, document = this.document)
             }
         } else {
-            select(annotation = null, pageIndex = fragment.pageIndex, document = this.document)
+            select(annotation = null, pageIndex = pdfUiFragment.pageIndex, document = this.document)
         }
+    }
+
+    fun focus(page: Int) {
+        scrollIfNeeded(page, animated = true, completion = {})
     }
 
     private fun focus(
@@ -1331,17 +1473,17 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun scrollIfNeeded(pageIndex: Int, animated: Boolean, completion: () -> Unit) {
-        if (fragment.pageIndex == pageIndex) {
+        if (pdfUiFragment.pageIndex == pageIndex) {
             completion()
             return
         }
 
         if (!animated) {
-            fragment.setPageIndex(pageIndex, false)
+            pdfUiFragment.setPageIndex(pageIndex, false)
             completion()
             return
         }
-        fragment.setPageIndex(pageIndex, true)
+        pdfUiFragment.setPageIndex(pageIndex, true)
         completion()
     }
 
@@ -1357,26 +1499,26 @@ class PdfReaderViewModel @Inject constructor(
         if (annotation != null) {
             val pdfAnnotation = document.annotation(pageIndex, annotation.key)
             if (pdfAnnotation != null) {
-                if (!fragment.selectedAnnotations.contains(pdfAnnotation)) {
-                    fragment.setSelectedAnnotation(pdfAnnotation)
-                    val zoomScale = fragment.getZoomScale(pageIndex)
+                if (!pdfFragment.selectedAnnotations.contains(pdfAnnotation)) {
+                    pdfFragment.setSelectedAnnotation(pdfAnnotation)
+                    val zoomScale = pdfFragment.getZoomScale(pageIndex)
                     if (zoomScale > 1.0) {
-                        fragment.scrollTo(pdfAnnotation.boundingBox, pageIndex, 100, false)
+                        pdfFragment.scrollTo(pdfAnnotation.boundingBox, pageIndex, 100, false)
                     }
                 }
             } else {
-                if (!fragment.selectedAnnotations.isEmpty()) {
-                    fragment.clearSelectedAnnotations()
+                if (!pdfFragment.selectedAnnotations.isEmpty()) {
+                    pdfFragment.clearSelectedAnnotations()
                 }
             }
         } else {
-            if (!fragment.selectedAnnotations.isEmpty()) {
-                fragment.clearSelectedAnnotations()
+            if (!pdfFragment.selectedAnnotations.isEmpty()) {
+                pdfFragment.clearSelectedAnnotations()
             }
         }
     }
 
-    fun annotation(key: AnnotationKey): org.zotero.android.pdf.data.Annotation? {
+    override fun annotation(key: AnnotationKey): org.zotero.android.pdf.data.Annotation? {
         when (key.type) {
             AnnotationKey.Kind.database -> {
                 return this.databaseAnnotations!!.where().key(key.key).findFirst()
@@ -1567,7 +1709,7 @@ class PdfReaderViewModel @Inject constructor(
         return oldComment == newComment
     }
 
-    fun selectAnnotation(key: AnnotationKey) {
+    override fun selectAnnotation(key: AnnotationKey) {
         if (!viewState.sidebarEditingEnabled && key != viewState.selectedAnnotationKey) {
             _select(key = key, didSelectInDocument = false)
         }
@@ -1593,9 +1735,9 @@ class PdfReaderViewModel @Inject constructor(
 
     override fun onCleared() {
         fragmentManager.commit(allowStateLoss = true) {
-            remove(this@PdfReaderViewModel.fragment)
+            remove(this@PdfReaderViewModel.pdfUiFragment)
         }
-        fragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+        pdfFragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
 
         EventBus.getDefault().unregister(this)
         liveAnnotations?.removeAllChangeListeners()
@@ -1603,9 +1745,13 @@ class PdfReaderViewModel @Inject constructor(
             parentKey = viewState.key,
             libraryId = viewState.library.identifier
         )
+        thumbnailPreviewManager.deleteAll(
+            key = viewState.key,
+            libraryId = viewState.library.identifier
+        )
         annotationPreviewManager.cancelProcessing()
-        fileCache.cancelProcessing()
-
+        annotationPreviewFileCache.cancelProcessing()
+        clearThumbnailCaches()
         document.annotationProvider
             .getAllAnnotationsOfTypeAsync(AnnotationsConfig.supported)
             .toList()
@@ -1613,8 +1759,8 @@ class PdfReaderViewModel @Inject constructor(
             .forEach {
                 this.document.annotationProvider.removeAnnotationFromPage(it)
             }
-        submitPendingPage(fragment.pageIndex)
-        val activity = fragment.activity
+        submitPendingPage(pdfUiFragment.pageIndex)
+        val activity = pdfUiFragment.activity
         if (activity != null) {
             WindowCompat.getInsetsController(activity.window, activity.window.decorView).show(
                 WindowInsetsCompat.Type.systemBars()
@@ -1623,7 +1769,13 @@ class PdfReaderViewModel @Inject constructor(
         super.onCleared()
     }
 
-    private fun generatePdfConfiguration(pdfSettings: PDFSettings): PdfConfiguration {
+    private fun clearThumbnailCaches() {
+        thumbnailPreviewManager.cancelProcessing()
+        thumbnailsPreviewFileCache.cancelProcessing()
+        thumbnailPreviewMemoryCache.clear()
+    }
+
+    private fun generatePdfConfiguration(pdfSettings: PDFSettings): PdfActivityConfiguration {
         if (!PSPDFKitPreferences.get(context).isAnnotationCreatorSet) {
             PSPDFKitPreferences.get(context).setAnnotationCreator(viewState.displayName)
         }
@@ -1650,7 +1802,8 @@ class PdfReaderViewModel @Inject constructor(
             true -> ThemeMode.NIGHT
             false -> ThemeMode.DEFAULT
         }
-        return PdfConfiguration.Builder()
+
+        return PdfActivityConfiguration.Builder(context)
             .scrollDirection(scrollDirection)
             .scrollMode(scrollMode)
             .fitMode(fitMode)
@@ -1663,10 +1816,14 @@ class PdfReaderViewModel @Inject constructor(
 //            .setSelectedAnnotationResizeEnabled(false)
             .autosaveEnabled(false)
             .scrollbarsEnabled(true)
+            .disableDefaultToolbar()
+            .hideDocumentTitleOverlay()
+            .enableStylusOnDetection(true)
+            .hideUserInterfaceWhenCreatingAnnotations(true)
             .build()
     }
 
-    fun loadPreviews(keys: List<String>) {
+    override fun loadAnnotationPreviews(keys: List<String>) {
         if (keys.isEmpty()) else {
             return
         }
@@ -1678,7 +1835,7 @@ class PdfReaderViewModel @Inject constructor(
             if (annotationPreviewMemoryCache.getBitmap(key) != null) {
                 continue
             }
-            fileCache.preview(
+            annotationPreviewFileCache.preview(
                 key = key,
                 parentKey = viewState.key,
                 libraryId = libraryId,
@@ -1687,14 +1844,14 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
-    fun onSearch(text: String) {
+    override fun onAnnotationSearch(text: String) {
         updateState {
-            copy(searchTerm = text)
+            copy(annotationSearchTerm = text)
         }
-        onSearchStateFlow.tryEmit(text)
+        onAnnotationSearchStateFlow.tryEmit(text)
     }
 
-    private fun search(term: String) {
+    private fun searchAnnotations(term: String) {
         val trimmedTerm = term.trim().trim { it == '\n' }
         filterAnnotations(term = trimmedTerm, filter = viewState.filter)
     }
@@ -1718,7 +1875,12 @@ class PdfReaderViewModel @Inject constructor(
             }
 
             updateState {
-                copy(snapshotKeys = null, sortedKeys = snapshot, searchTerm = "", filter = null)
+                copy(
+                    snapshotKeys = null,
+                    sortedKeys = snapshot,
+                    annotationSearchTerm = "",
+                    filter = null
+                )
             }
             return
         }
@@ -1750,7 +1912,7 @@ class PdfReaderViewModel @Inject constructor(
             }
         }
         updateState {
-            copy(sortedKeys = filteredKeys, searchTerm = term, filter = filter)
+            copy(sortedKeys = filteredKeys, annotationSearchTerm = term, filter = filter)
         }
     }
 
@@ -1808,7 +1970,7 @@ class PdfReaderViewModel @Inject constructor(
         return hasTag && hasColor
     }
 
-    fun showFilterPopup() {
+    override fun showFilterPopup() {
         val colors = mutableSetOf<String>()
         val tags = mutableSetOf<Tag>()
 
@@ -1860,7 +2022,7 @@ class PdfReaderViewModel @Inject constructor(
         if (filter == viewState.filter) {
             return
         }
-        filterAnnotations(term = viewState.searchTerm, filter = filter)
+        filterAnnotations(term = viewState.annotationSearchTerm, filter = filter)
     }
 
     fun navigateToPdfSettings() {
@@ -1868,7 +2030,7 @@ class PdfReaderViewModel @Inject constructor(
         triggerEffect(PdfReaderViewEffect.ShowPdfSettings)
     }
 
-    fun showToolOptions() {
+    override fun showToolOptions() {
         val tool = this.activeAnnotationTool ?: return
 
         val colorHex = this.toolColors[tool]
@@ -1899,7 +2061,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     fun onStop(isChangingConfigurations: Boolean) {
-        pdfDocumentBeforeFragmentDestruction = fragment.document!!
+        pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
         if (isChangingConfigurations) {
             removeFragment()
         }
@@ -1907,26 +2069,46 @@ class PdfReaderViewModel @Inject constructor(
 
     fun removeFragment() {
         fragmentManager.commit {
-            remove(this@PdfReaderViewModel.fragment)
+            remove(this@PdfReaderViewModel.pdfUiFragment)
         }
     }
 
     private fun replaceFragment() {
         val updatedConfiguration = generatePdfConfiguration(defaults.getPDFSettings())
-        this.fragment =
-            PdfFragment.newInstance(this.pdfDocumentBeforeFragmentDestruction, updatedConfiguration)
-        this.fragment.addDocumentListener(object : DocumentListener {
+
+        this.pdfUiFragment =
+            PdfUiFragmentBuilder
+                .fromUri(context, this.uri)
+                .fragmentClass(CustomPdfUiFragment::class.java)
+                .configuration(updatedConfiguration)
+                .build()
+
+        this@PdfReaderViewModel.pdfUiFragment.lifecycle.addObserver(object: DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) {
+                this@PdfReaderViewModel.pdfFragment = pdfUiFragment.pdfFragment!!
+                addDocumentListener2()
+                addOnAnnotationCreationModeChangeListener()
+                setOnPreparePopupToolbarListener()
+//                updateVisibilityOfAnnotations()
+
+            }
+
+            override fun onDestroy(owner: LifecycleOwner) {
+                pdfUiFragment.lifecycle.removeObserver(this)
+            }
+        })
+
+
+        fragmentManager.commit {
+            replace(containerId, this@PdfReaderViewModel.pdfUiFragment)
+        }
+    }
+
+    private fun addDocumentListener2() {
+        this.pdfFragment.addDocumentListener(object : DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
-                val annotationToReselect = this@PdfReaderViewModel.selectedAnnotation
-                if (annotationToReselect != null) {
-                    val pdfAnnotation =
-                        document.annotation(annotationToReselect.page, annotationToReselect.key)
-                    if (pdfAnnotation != null) {
-//                        fragment.setSelectedAnnotation(pdfAnnotation)
-                    }
-                }
-                setupInteractionListeners()
-                observeDocument()
+                this@PdfReaderViewModel.onDocumentLoaded(document)
+
                 if (queuedUpPdfReaderColorPickerResult != null) {
                     setToolOptions(
                         hex = queuedUpPdfReaderColorPickerResult!!.colorHex,
@@ -1936,8 +2118,8 @@ class PdfReaderViewModel @Inject constructor(
                     queuedUpPdfReaderColorPickerResult = null
 
                 }
-
             }
+
             override fun onPageClick(
                 document: PdfDocument,
                 pageIndex: Int,
@@ -1945,24 +2127,16 @@ class PdfReaderViewModel @Inject constructor(
                 pagePosition: PointF?,
                 clickedAnnotation: Annotation?
             ): Boolean {
-                toggleTopAndBottomBarVisibility()
                 return false
             }
         })
-        this@PdfReaderViewModel.fragment.addDocumentListener(pdfThumbnailBar.documentListener)
-        setOnPreparePopupToolbarListener()
-        addOnAnnotationCreationModeChangeListener()
-
-        fragmentManager.commit {
-            replace(containerId, this@PdfReaderViewModel.fragment)
-        }
-        updateVisibilityOfAnnotations()
     }
 
     private fun addOnAnnotationCreationModeChangeListener() {
-        this.fragment.addOnAnnotationCreationModeChangeListener(object :
+        this.pdfFragment.addOnAnnotationCreationModeChangeListener(object :
             AnnotationManager.OnAnnotationCreationModeChangeListener {
             override fun onEnterAnnotationCreationMode(p0: AnnotationCreationController) {
+                hidePspdfkitToolbars()
                 set(true)
             }
 
@@ -1977,24 +2151,17 @@ class PdfReaderViewModel @Inject constructor(
         })
     }
 
-    private fun toggleTopAndBottomBarVisibility() {
-        val isVisibleNewState = !pdfThumbnailBar.isVisible
+    private fun toggleTopAndBottomBarVisibility(isVisible: Boolean) {
         updateState {
-            copy(isTopBarVisible = isVisibleNewState)
+            copy(isTopBarVisible = isVisible)
         }
-        val transition: Transition = Fade()
-        transition.setDuration(200)
-        transition.addTarget(pdfThumbnailBar)
-
-        TransitionManager.beginDelayedTransition(pdfThumbnailBar.parent as ViewGroup, transition)
-        pdfThumbnailBar.visibility = if (isVisibleNewState) View.VISIBLE else View.GONE
     }
 
     private fun updateVisibilityOfAnnotations() {
         handler.postDelayed({
-            val pageIndex = if (fragment.pageIndex == -1) 0 else fragment.pageIndex
+            val pageIndex = if (pdfUiFragment.pageIndex == -1) 0 else pdfUiFragment.pageIndex
             this.document.annotationProvider.getAnnotations(pageIndex).forEach {
-                this.fragment.notifyAnnotationHasChanged(it)
+                this.pdfFragment.notifyAnnotationHasChanged(it)
             }
         }, 200)
     }
@@ -2004,16 +2171,16 @@ class PdfReaderViewModel @Inject constructor(
             copy(showCreationToolbar = !viewState.showCreationToolbar)
         }
         if (!viewState.showCreationToolbar) {
-            fragment.exitCurrentlyActiveMode()
+            pdfFragment.exitCurrentlyActiveMode()
         }
     }
-    fun toggle(tool: AnnotationTool) {
+    override fun toggle(tool: AnnotationTool) {
         val color = this.toolColors[tool]
         toggle(annotationTool = tool, color = color)
     }
 
     fun toggle(annotationTool: AnnotationTool, color: String?) {
-        val tool = fragment.activeAnnotationTool
+        val tool = pdfFragment.activeAnnotationTool
 
         if (tool != null && tool != AnnotationTool.ERASER && tool != this.toolHistory.lastOrNull()) {
             this.toolHistory.add(tool)
@@ -2022,8 +2189,8 @@ class PdfReaderViewModel @Inject constructor(
             }
         }
 
-        if (fragment.activeAnnotationTool == annotationTool) {
-            fragment.exitCurrentlyActiveMode()
+        if (pdfFragment.activeAnnotationTool == annotationTool) {
+            pdfFragment.exitCurrentlyActiveMode()
             return
         }
 
@@ -2050,7 +2217,7 @@ class PdfReaderViewModel @Inject constructor(
         annotationTool: AnnotationTool,
         drawColor: Int?
     ) {
-        fragment.exitCurrentlyActiveMode()
+        pdfFragment.exitCurrentlyActiveMode()
         when (annotationTool) {
             AnnotationTool.INK -> {
                 configureInk(drawColor, this.activeLineWidth)
@@ -2074,7 +2241,7 @@ class PdfReaderViewModel @Inject constructor(
 
             else -> {}
         }
-        fragment.enterAnnotationCreationMode(annotationTool)
+        pdfFragment.enterAnnotationCreationMode(annotationTool)
         triggerEffect(PdfReaderViewEffect.ScreenRefresh)
     }
 
@@ -2082,7 +2249,7 @@ class PdfReaderViewModel @Inject constructor(
         if (drawColor == null) {
             return
         }
-        fragment.annotationConfiguration
+        pdfFragment.annotationConfiguration
             .put(
                 AnnotationTool.NOTE,
                 NoteAnnotationConfiguration.builder(context)
@@ -2092,7 +2259,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun configureEraser(activeEraserSize: Float) {
-        fragment.annotationConfiguration
+        pdfFragment.annotationConfiguration
             .put(
                 AnnotationTool.ERASER,
                 EraserToolConfiguration.builder()
@@ -2106,7 +2273,7 @@ class PdfReaderViewModel @Inject constructor(
         if (drawColor == null) {
             return
         }
-        fragment.annotationConfiguration
+        pdfFragment.annotationConfiguration
             .put(
                 AnnotationTool.HIGHLIGHT,
                 MarkupAnnotationConfiguration.builder(context, AnnotationTool.HIGHLIGHT) // Configure which color is used when creating ink annotations.
@@ -2120,7 +2287,7 @@ class PdfReaderViewModel @Inject constructor(
         if (drawColor == null) {
             return
         }
-        fragment.annotationConfiguration
+        pdfFragment.annotationConfiguration
             .put(
                 AnnotationTool.INK,
                 InkAnnotationConfiguration.builder(context) // Configure which color is used when creating ink annotations.
@@ -2137,7 +2304,7 @@ class PdfReaderViewModel @Inject constructor(
         }
 
         // Annotation configuration can be configured through PdfFragment for each annotation type.
-        fragment.annotationConfiguration
+        pdfFragment.annotationConfiguration
             .put(
                 AnnotationType.SQUARE,
                 ShapeAnnotationConfiguration.builder(context, AnnotationType.SQUARE)
@@ -2146,29 +2313,29 @@ class PdfReaderViewModel @Inject constructor(
             )
     }
 
-    val activeAnnotationTool: AnnotationTool? get() {
-        return this.fragment.activeAnnotationTool
+    override val activeAnnotationTool: AnnotationTool? get() {
+        return this.pdfFragment.activeAnnotationTool
     }
 
-    fun canUndo() : Boolean {
-        return this.fragment.undoManager.canUndo()
+    override fun canUndo() : Boolean {
+        return this.pdfFragment.undoManager.canUndo()
     }
 
-    fun canRedo() : Boolean {
-        return this.fragment.undoManager.canRedo()
+    override fun canRedo() : Boolean {
+        return this.pdfFragment.undoManager.canRedo()
     }
 
-    fun onUndoClick() {
-        this.fragment.undoManager.undo()
+    override fun onUndoClick() {
+        this.pdfFragment.undoManager.undo()
         triggerEffect(PdfReaderViewEffect.ScreenRefresh)
     }
 
-    fun onRedoClick() {
-        this.fragment.undoManager.redo()
+    override fun onRedoClick() {
+        this.pdfFragment.undoManager.redo()
         triggerEffect(PdfReaderViewEffect.ScreenRefresh)
     }
 
-    fun onCloseClick() {
+    override fun onCloseClick() {
         toggleToolbarButton()
     }
 
@@ -2177,6 +2344,16 @@ class PdfReaderViewModel @Inject constructor(
 
         if (finalAnnotations.isEmpty()) {
             return
+        } else {
+            finalAnnotations.map { it.page }.toSet().forEach { pageIndex ->
+                thumbnailPreviewManager.store(
+                    pageIndex = pageIndex,
+                    key = viewState.key,
+                    document = this.document,
+                    libraryId = viewState.library.identifier,
+                    isDark = viewState.isDark,
+                )
+            }
         }
         val request = CreateAnnotationsDbRequest(
             attachmentKey = viewState.key,
@@ -2437,7 +2614,7 @@ class PdfReaderViewModel @Inject constructor(
         updateAnnotationToolDrawColorAndSize(tool, drawColor = drawColor)
     }
 
-    fun onCommentTextChange(annotationKey: String, comment: String) {
+    override fun onCommentTextChange(annotationKey: String, comment: String) {
         updateState {
             copy(commentFocusText = comment)
         }
@@ -2458,7 +2635,7 @@ class PdfReaderViewModel @Inject constructor(
         update(annotation = annotation, contents = htmlComment, document = this.document)
     }
 
-    fun onCommentFocusFieldChange(annotationKey: String) {
+    override fun onCommentFocusFieldChange(annotationKey: String) {
         val key = AnnotationKey(key = annotationKey, type = AnnotationKey.Kind.database)
         val annotation =
             annotation(key)
@@ -2473,7 +2650,7 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
-    fun onTagsClicked(annotation: org.zotero.android.pdf.data.Annotation) {
+    override fun onTagsClicked(annotation: org.zotero.android.pdf.data.Annotation) {
 //        if (!annotation.isAuthor(viewState.userId)) {
 //            return
 //        }
@@ -2514,7 +2691,7 @@ class PdfReaderViewModel @Inject constructor(
         update(annotation = annotation, lineWidth = lineWidth, document = this.document)
     }
 
-    fun onMoreOptionsForItemClicked() {
+    override fun onMoreOptionsForItemClicked() {
         ScreenArguments.pdfAnnotationMoreArgs = PdfAnnotationMoreArgs(
             selectedAnnotation = selectedAnnotation,
             userId = viewState.userId,
@@ -2586,6 +2763,192 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
+    override fun setSidebarSliderSelectedOption(optionOrdinal: Int) {
+        val option = PdfReaderSliderOptions.entries[optionOrdinal]
+        updateState {
+            copy(sidebarSliderSelectedOption = option)
+        }
+    }
+
+    private fun createSnapshot(search: String) {
+        val snapshot = mutableListOf<PdfReaderOutlineOptionsWithChildren>()
+        append(outlines = document.outline, parent = null, snapshot = snapshot, search = search)
+        if (snapshot.size == 1) {
+            updateState {
+                copy(
+                    outlineSnapshot = snapshot,
+                    outlineExpandedNodes = setOf(snapshot[0].outline.id)
+                )
+            }
+        } else {
+            updateState {
+                copy(
+                    outlineSnapshot = snapshot,
+                    outlineExpandedNodes = emptySet()
+                )
+            }
+        }
+    }
+
+    private fun append(
+        outlines: List<OutlineElement>,
+        parent: PdfReaderOutlineOptionsWithChildren?,
+        snapshot: MutableList<PdfReaderOutlineOptionsWithChildren>,
+        search: String
+    ) {
+        val rows = mutableListOf<PdfReaderOutlineOptionsWithChildren>()
+        for (element in outlines) {
+            if (search.isEmpty()) {
+                val outline = PdfReaderOutlineOptionsWithChildren(Outline(element = element, isActive = true))
+                rows.add(outline)
+                continue
+            }
+
+            val elementContainsSearch = outline(element, search)
+            val childContainsSearch = child(element.children, search)
+
+            if (!elementContainsSearch && !childContainsSearch) { continue }
+
+            val outline = PdfReaderOutlineOptionsWithChildren(Outline(element = element, isActive = elementContainsSearch))
+            rows.add(outline)
+        }
+        if (parent == null) {
+            snapshot.addAll(rows)
+        } else {
+            parent.children.addAll(rows)
+        }
+
+        for ((idx, element) in outlines.withIndex()) {
+            val children = element.children
+
+            if (search.isEmpty()) {
+                append(outlines=  children, parent = rows[idx], snapshot = snapshot, search =  search)
+                continue
+            }
+
+            val index = rows.indexOfFirst { row ->
+                val pageIndex: Int? = (element.action as? GoToAction)?.pageIndex
+                row.outline.title == element.title && row.outline.page == pageIndex
+
+            }
+            if (index == -1) {
+                continue
+            }
+
+            append(outlines = children, parent = rows[index], snapshot = snapshot, search = search)
+        }
+
+    }
+
+    private fun child(children: List<OutlineElement>, string: String): Boolean {
+        if (children.isEmpty()) {
+            return false
+        }
+
+        for (child in children) {
+            if (outline(child, string)) {
+                return true
+            }
+
+            val children = child.children
+
+            if (children != null && child(children, string)) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun outline(outline: OutlineElement, string: String): Boolean {
+        val pageIndex: Int? = (outline.action as? GoToAction)?.pageIndex
+        return (outline.title ?: "").contains(string, ignoreCase = true) || string.toIntOrNull() == pageIndex
+    }
+
+    override fun onOutlineSearch(search: String) {
+        if (search == viewState.outlineSearchTerm) {
+            return
+        }
+        updateState {
+            copy(outlineSearchTerm = search)
+        }
+        onOutlineSearchStateFlow.tryEmit(search)
+    }
+
+    private fun setupOutlineSearchStateFlow() {
+        onOutlineSearchStateFlow
+            .drop(1)
+            .debounce(150)
+            .map { text ->
+                searchOutlines(text)
+            }
+            .launchIn(viewModelScope)
+    }
+
+    private fun searchOutlines(search: String) {
+        createSnapshot(search = search)
+    }
+
+    override fun onOutlineItemTapped(outline: Outline) {
+        if (!outline.isActive) {
+            return
+        }
+        focus(page = outline.page)
+        if (!isTablet) {
+            toggleSideBar()
+        }
+    }
+
+    override fun onOutlineItemChevronTapped(outline: Outline) {
+        val expandedNodes = viewState.outlineExpandedNodes
+        val newState = if (expandedNodes.contains(outline.id)) {
+            expandedNodes - outline.id
+        } else {
+            expandedNodes + outline.id
+        }
+        updateState {
+            copy(outlineExpandedNodes = newState)
+        }
+    }
+
+    override fun selectThumbnail(row: PdfReaderThumbnailRow) {
+        updateState {
+            copy(selectedThumbnail = row)
+        }
+        scrollIfNeeded(row.pageIndex, false) {}
+    }
+
+    override fun loadThumbnailPreviews(pageIndex: Int) {
+        val isDark = viewState.isDark
+        val libraryId = viewState.library.identifier
+
+        if (thumbnailPreviewMemoryCache.getBitmap(pageIndex) != null) {
+            return
+        }
+        if (thumbnailPreviewManager.hasThumbnail(
+                page = pageIndex,
+                key = viewState.key,
+                libraryId = libraryId,
+                isDark = isDark
+            )
+        ) {
+            thumbnailsPreviewFileCache.preview(
+                pageIndex = pageIndex,
+                key = viewState.key,
+                libraryId = libraryId,
+                isDark = isDark
+            )
+        } else {
+            thumbnailPreviewManager.store(
+                pageIndex = pageIndex,
+                key = viewState.key,
+                document = this.document,
+                libraryId = viewState.library.identifier,
+                isDark = viewState.isDark,
+            )
+        }
+
+    }
 }
 
 data class PdfReaderViewState(
@@ -2611,7 +2974,7 @@ data class PdfReaderViewState(
     var selectedAnnotationCommentActive: Boolean = false,
     val sidebarEditingEnabled: Boolean = false,
     val updatedAnnotationKeys: List<AnnotationKey>? = null,
-    val searchTerm: String = "",
+    val annotationSearchTerm: String = "",
     val filter: AnnotationsFilter? = null,
     val showSideBar: Boolean = false,
     val showCreationToolbar: Boolean = false,
@@ -2619,9 +2982,26 @@ data class PdfReaderViewState(
     val commentFocusKey: String? = null,
     val commentFocusText: String = "",
     val isTopBarVisible: Boolean = true,
-): ViewState {
+    val sidebarSliderSelectedOption: PdfReaderSliderOptions = PdfReaderSliderOptions.Annotations,
+    val outlineExpandedNodes: Set<String> = emptySet(),
+    val outlineSnapshot: List<PdfReaderOutlineOptionsWithChildren> = emptyList(),
+    val outlineSearchTerm: String = "",
+    val isOutlineEmpty: Boolean = false,
+    val thumbnailRows: ImmutableList<PdfReaderThumbnailRow> = persistentListOf(),
+    val selectedThumbnail: PdfReaderThumbnailRow? = null
+) : ViewState {
+
     fun isAnnotationSelected(annotationKey: String): Boolean {
         return this.selectedAnnotationKey?.key == annotationKey
+    }
+
+    fun isOutlineSectionCollapsed(id: String): Boolean {
+        val isCollapsed = !outlineExpandedNodes.contains(id)
+        return isCollapsed
+    }
+
+    fun isThumbnailSelected(row: PdfReaderThumbnailRow): Boolean {
+        return this.selectedThumbnail == row
     }
 }
 
@@ -2635,6 +3015,7 @@ sealed class PdfReaderViewEffect : ViewEffect {
     object ScreenRefresh: PdfReaderViewEffect()
     object ClearFocus: PdfReaderViewEffect()
     object NavigateToTagPickerScreen: PdfReaderViewEffect()
+    data class ScrollThumbnailListToIndex(val scrollToIndex: Int): PdfReaderViewEffect()
 }
 
 data class AnnotationKey(
