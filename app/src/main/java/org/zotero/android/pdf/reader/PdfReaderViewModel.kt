@@ -21,12 +21,16 @@ import com.pspdfkit.annotations.AnnotationFlags
 import com.pspdfkit.annotations.AnnotationProvider
 import com.pspdfkit.annotations.AnnotationType
 import com.pspdfkit.annotations.BlendMode
+import com.pspdfkit.annotations.FreeTextAnnotation
 import com.pspdfkit.annotations.HighlightAnnotation
 import com.pspdfkit.annotations.InkAnnotation
 import com.pspdfkit.annotations.NoteAnnotation
 import com.pspdfkit.annotations.SquareAnnotation
+import com.pspdfkit.annotations.TextMarkupAnnotation
+import com.pspdfkit.annotations.UnderlineAnnotation
 import com.pspdfkit.annotations.actions.GoToAction
 import com.pspdfkit.annotations.configuration.EraserToolConfiguration
+import com.pspdfkit.annotations.configuration.FreeTextAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.InkAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.MarkupAnnotationConfiguration
 import com.pspdfkit.annotations.configuration.NoteAnnotationConfiguration
@@ -43,6 +47,7 @@ import com.pspdfkit.preferences.PSPDFKitPreferences
 import com.pspdfkit.ui.PdfFragment
 import com.pspdfkit.ui.PdfUiFragment
 import com.pspdfkit.ui.PdfUiFragmentBuilder
+import com.pspdfkit.ui.search.SearchResultHighlighter
 import com.pspdfkit.ui.special_mode.controller.AnnotationCreationController
 import com.pspdfkit.ui.special_mode.controller.AnnotationSelectionController
 import com.pspdfkit.ui.special_mode.controller.AnnotationTool
@@ -84,9 +89,12 @@ import org.zotero.android.database.objects.AnnotationsConfig
 import org.zotero.android.database.objects.FieldKeys
 import org.zotero.android.database.objects.RItem
 import org.zotero.android.database.objects.UpdatableChangeType
+import org.zotero.android.database.objects.zoteroType
 import org.zotero.android.database.requests.CreatePDFAnnotationsDbRequest
+import org.zotero.android.database.requests.EditAnnotationFontSizeDbRequest
 import org.zotero.android.database.requests.EditAnnotationPathsDbRequest
 import org.zotero.android.database.requests.EditAnnotationRectsDbRequest
+import org.zotero.android.database.requests.EditAnnotationRotationDbRequest
 import org.zotero.android.database.requests.EditItemFieldsDbRequest
 import org.zotero.android.database.requests.EditTagsForItemDbRequest
 import org.zotero.android.database.requests.MarkObjectsAsDeletedDbRequest
@@ -96,7 +104,6 @@ import org.zotero.android.database.requests.StorePageForItemDbRequest
 import org.zotero.android.database.requests.key
 import org.zotero.android.ktx.annotation
 import org.zotero.android.ktx.baseColor
-import org.zotero.android.ktx.index
 import org.zotero.android.ktx.isZoteroAnnotation
 import org.zotero.android.ktx.key
 import org.zotero.android.ktx.rounded
@@ -128,6 +135,12 @@ import org.zotero.android.pdf.data.PdfAnnotationChanges
 import org.zotero.android.pdf.data.PdfReaderArgs
 import org.zotero.android.pdf.data.PdfReaderCurrentThemeEventStream
 import org.zotero.android.pdf.data.PdfReaderThemeDecider
+import org.zotero.android.pdf.pdffilter.data.PdfFilterArgs
+import org.zotero.android.pdf.pdffilter.data.PdfFilterResult
+import org.zotero.android.pdf.reader.AnnotationKey.Kind
+import org.zotero.android.pdf.reader.pdfsearch.data.PdfReaderSearchArgs
+import org.zotero.android.pdf.reader.pdfsearch.data.PdfReaderSearchResultSelected
+import org.zotero.android.pdf.reader.plainreader.data.PdfPlainReaderArgs
 import org.zotero.android.pdf.reader.sidebar.data.Outline
 import org.zotero.android.pdf.reader.sidebar.data.PdfReaderOutlineOptionsWithChildren
 import org.zotero.android.pdf.reader.sidebar.data.PdfReaderSliderOptions
@@ -138,8 +151,6 @@ import org.zotero.android.pdf.reader.sidebar.data.ThumbnailPreviewMemoryCache
 import org.zotero.android.pdf.reader.sidebar.data.ThumbnailsPreviewFileCache
 import org.zotero.android.pdf.settings.data.PdfSettingsArgs
 import org.zotero.android.pdf.settings.data.PdfSettingsChangeResult
-import org.zotero.android.pdffilter.data.PdfFilterArgs
-import org.zotero.android.pdffilter.data.PdfFilterResult
 import org.zotero.android.screens.tagpicker.data.TagPickerArgs
 import org.zotero.android.screens.tagpicker.data.TagPickerResult
 import org.zotero.android.sync.AnnotationBoundingBoxCalculator
@@ -156,6 +167,8 @@ import org.zotero.android.sync.Tag
 import timber.log.Timber
 import java.util.EnumSet
 import javax.inject.Inject
+import kotlin.random.Random
+
 
 @HiltViewModel
 class PdfReaderViewModel @Inject constructor(
@@ -191,6 +204,7 @@ class PdfReaderViewModel @Inject constructor(
     private lateinit var rawDocument: PdfDocument
     var comments = mutableMapOf<String, String>()
     private val onAnnotationSearchStateFlow = MutableStateFlow("")
+    private val onAnnotationChangedDebouncerFlow = MutableStateFlow<Triple<Int, List<String>, FreeTextAnnotation>?>(null)
     private val onOutlineSearchStateFlow = MutableStateFlow("")
     private val onCommentChangeFlow = MutableStateFlow<Pair<String, String>?>(null)
     private lateinit var fragmentManager: FragmentManager
@@ -207,8 +221,11 @@ class PdfReaderViewModel @Inject constructor(
     var changedColorForTool: AnnotationTool? = null
     var activeLineWidth: Float = 0.0f
     var activeEraserSize: Float = 0.0f
+    var activeFontSize: Float = 0.0f
 
     private var toolHistory = mutableListOf<AnnotationTool>()
+
+    private lateinit var searchResultHighlighter: SearchResultHighlighter
 
     val screenArgs: PdfReaderArgs by lazy {
         val argsEncoded = stateHandle.get<String>(ARG_PDF_SCREEN).require()
@@ -234,9 +251,10 @@ class PdfReaderViewModel @Inject constructor(
         set(
             color = result.color,
             lineWidth = result.lineWidth,
+            fontSize = result.fontSize,
             pageLabel = result.pageLabel,
             updateSubsequentLabels = result.updateSubsequentLabels,
-            highlightText = result.highlightText,
+            text = result.text,
             key = result.key.key,
         )
     }
@@ -318,8 +336,13 @@ class PdfReaderViewModel @Inject constructor(
                 )
             }
         }
+    }
 
-
+    @Subscribe(threadMode = ThreadMode.MAIN)
+    fun onEvent(result: PdfReaderSearchResultSelected) {
+        searchResultHighlighter.setSearchResults(listOf(result.searchResult))
+        searchResultHighlighter.setSelectedSearchResult(result.searchResult)
+        this.pdfUiFragment.pageIndex = result.searchResult.pageIndex
     }
 
     private fun update(pdfSettings: PDFSettings) {
@@ -374,6 +397,8 @@ class PdfReaderViewModel @Inject constructor(
         this.containerId = containerId
         this.annotationMaxSideSize = annotationMaxSideSize
 
+        searchResultHighlighter = SearchResultHighlighter(context)
+
         if (this::pdfUiFragment.isInitialized) {
             replaceFragment()
             return
@@ -388,6 +413,7 @@ class PdfReaderViewModel @Inject constructor(
         setupAnnotationSearchStateFlow()
         setupOutlineSearchStateFlow()
         setupCommentChangeFlow()
+        setupAnnotationChangedDebouncerFlow()
 
         val pdfSettings = defaults.getPDFSettings()
         pdfReaderThemeDecider.setPdfPageAppearanceMode(pdfSettings.appearanceMode)
@@ -400,6 +426,7 @@ class PdfReaderViewModel @Inject constructor(
         this@PdfReaderViewModel.pdfUiFragment.lifecycle.addObserver(object: DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 this@PdfReaderViewModel.pdfFragment = pdfUiFragment.pdfFragment!!
+                this@PdfReaderViewModel.pdfFragment.addDrawableProvider(searchResultHighlighter)
                 addDocumentListenerOnInit()
                 addOnAnnotationCreationModeChangeListener()
                 setOnPreparePopupToolbarListener()
@@ -464,8 +491,13 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun setC(color: String, key:String) {
-        val annotation = annotation(AnnotationKey(key = key, type = AnnotationKey.Kind.database)) ?: return
+        val annotation = annotation(AnnotationKey(key = key, type = Kind.database)) ?: return
         update(annotation = annotation, color = (color to viewState.isDark), document = this.document)
+    }
+
+    private fun setF(fontSize: Float, key: String) {
+        val annotation = annotation(AnnotationKey(key = key, type = Kind.database)) ?: return
+        update(annotation = annotation, fontSize = fontSize, document = this.document)
     }
 
 
@@ -579,8 +611,8 @@ class PdfReaderViewModel @Inject constructor(
 
             override fun onAnnotationSelected(annotation: Annotation, p1: Boolean) {
                 val key = annotation.key ?: annotation.uuid
-                val type: AnnotationKey.Kind =
-                    if (annotation.isZoteroAnnotation) AnnotationKey.Kind.database else AnnotationKey.Kind.document
+                val type: Kind =
+                    if (annotation.isZoteroAnnotation) Kind.database else Kind.document
                 selectAnnotationFromDocument(AnnotationKey(key = key, type = type))
             }
 
@@ -601,10 +633,13 @@ class PdfReaderViewModel @Inject constructor(
             AnnotationTool.SQUARE to defaults.getSquareColorHex(),
             AnnotationTool.NOTE to defaults.getNoteColorHex(),
             AnnotationTool.INK to defaults.getInkColorHex(),
+            AnnotationTool.UNDERLINE to defaults.getUnderlineColorHex(),
+            AnnotationTool.FREETEXT to defaults.getTextColorHex(),
         )
 
         this.activeLineWidth = defaults.getActiveLineWidth()
         this.activeEraserSize = defaults.getActiveEraserSize()
+        this.activeFontSize = defaults.getActiveFontSize()
 
         updateState {
             copy(
@@ -618,7 +653,7 @@ class PdfReaderViewModel @Inject constructor(
                 selectedAnnotationKey = params.preselectedAnnotationKey?.let {
                     AnnotationKey(
                         key = it,
-                        type = AnnotationKey.Kind.database
+                        type = Kind.database
                     )
                 }
             )
@@ -777,6 +812,17 @@ class PdfReaderViewModel @Inject constructor(
         updateAnnotationsList(forceNotShowAnnotationPopup = true)
     }
 
+    private fun setupAnnotationChangedDebouncerFlow() {
+        onAnnotationChangedDebouncerFlow
+            .debounce(200)
+            .map { pair ->
+                if (pair != null) {
+                    change(annotation = pair.third, pair.second)
+                }
+            }
+            .launchIn(viewModelScope)
+    }
+
     private fun observeDocument() {
         onAnnotationUpdatedListener = object :
             AnnotationProvider.OnAnnotationUpdatedListener {
@@ -839,6 +885,7 @@ class PdfReaderViewModel @Inject constructor(
 
         var requests = mutableListOf<DbRequest>()
         val inkAnnotation = annotation as? InkAnnotation
+        val textAnnotation = annotation as? FreeTextAnnotation
         if (inkAnnotation != null) {
             if (hasChanges(listOf(PdfAnnotationChanges.paths, PdfAnnotationChanges.boundingBox))) {
                 val paths = AnnotationConverter.paths(inkAnnotation)
@@ -867,7 +914,44 @@ class PdfReaderViewModel @Inject constructor(
                 )
                 requests.add(request)
             }
-        } else if (hasChanges(listOf(PdfAnnotationChanges.boundingBox, PdfAnnotationChanges.rects))) {
+        } else if (textAnnotation != null) {
+            var editFontSize = hasChanges(listOf(PdfAnnotationChanges.fontSize))
+            if (hasChanges(listOf(PdfAnnotationChanges.boundingBox))) {
+                val rects = AnnotationConverter.rects(annotation)
+                if (rects != null) {
+                    requests.add(
+                        EditAnnotationRectsDbRequest(
+                            key = key,
+                            libraryId = viewState.library.identifier,
+                            rects = rects,
+                            boundingBoxConverter = this.annotationBoundingBoxConverter
+                        )
+                    )
+                    editFontSize = true
+                }
+            }
+
+            if (hasChanges(listOf(PdfAnnotationChanges.rotation))) {
+                requests.add(
+                    EditAnnotationRotationDbRequest(
+                        key = key,
+                        libraryId = viewState.library.identifier,
+                        rotation = 360 - textAnnotation.rotation
+                    )
+                )
+            }
+            if (editFontSize) {
+                requests.add(
+                    EditAnnotationFontSizeDbRequest(
+                        key = key,
+                        libraryId = viewState.library.identifier,
+                        size = textAnnotation.textSize.toInt()
+                    )
+                )
+            }
+        }
+
+        else if (hasChanges(listOf(PdfAnnotationChanges.boundingBox, PdfAnnotationChanges.rects))) {
             val rects = AnnotationConverter.rects(annotation)
             if (rects != null) {
                 requests.add(
@@ -937,18 +1021,56 @@ class PdfReaderViewModel @Inject constructor(
 
         when (pdfReaderNotification) {
             PdfReaderNotification.PSPDFAnnotationChanged -> {
-                if (!changes.isEmpty()) {
-                    change(annotation = annotation, changes = changes)
-                } else {
-                    change(
-                        annotation = annotation,
-                        changes = PdfAnnotationChanges.stringValues(
-                            listOf(
-                                PdfAnnotationChanges.boundingBox,
-                                PdfAnnotationChanges.paths
+                when (annotation) {
+                    is FreeTextAnnotation -> {
+                        val adjustedAnnotations: List<String> = if (changes.isEmpty()) {
+                            PdfAnnotationChanges.stringValues(
+                                listOf(
+                                    PdfAnnotationChanges.boundingBox,
+                                    PdfAnnotationChanges.fontSize,
+                                    PdfAnnotationChanges.rotation,
+                                    PdfAnnotationChanges.contents,
+                                )
+                            )
+                        } else {
+                            changes
+                        }
+                        val key = annotation.key
+                        if (key != null) {
+//                        if (changes.contains("rotation") || freeTextAnnotation.rotation != 0) {
+                            onAnnotationChangedDebouncerFlow.tryEmit(
+                                Triple(
+                                    Random.nextInt(),
+                                    adjustedAnnotations,
+                                    annotation
+                                )
+                            )
+//                        } else {
+//                            val k = onAnnotationChangedDebouncerFlow.value
+//                            if (k != null) {
+//                                change(k.second, k.first)
+//                            }
+//                            change(annotation = annotation, changes = changes)
+//                        }
+                        } else {
+                            change(annotation = annotation, changes = adjustedAnnotations)
+                        }
+                    }
+                    else -> {
+                        val listOfChanges = mutableListOf(
+                            PdfAnnotationChanges.boundingBox,
+                            PdfAnnotationChanges.paths
+                        )
+                        if (annotation is UnderlineAnnotation) {
+                            listOfChanges.add(PdfAnnotationChanges.color)
+                        }
+                        change(
+                            annotation = annotation,
+                            changes = PdfAnnotationChanges.stringValues(
+                                listOfChanges
                             )
                         )
-                    )
+                    }
                 }
             }
             PdfReaderNotification.PSPDFAnnotationsAdded -> {
@@ -958,18 +1080,7 @@ class PdfReaderViewModel @Inject constructor(
                 remove(annotations = listOf(annotation))
             }
         }
-
-        updatePdfChanged(annotation, changes)
     }
-
-    private fun updatePdfChanged(annotation: Annotation, changes: List<String>) {
-        if (changes.isEmpty()) {
-            return
-        }
-        //TODO Android's PSDFKit library doesn't seem to have that functionality
-
-    }
-
 
     private fun preselectedData(
         databaseAnnotations: RealmResults<RItem>,
@@ -1039,11 +1150,11 @@ class PdfReaderViewModel @Inject constructor(
             }
             sortMap[item.annotationSortIndex] = AnnotationKey(
                 key = item.key,
-                type = AnnotationKey.Kind.database
+                type = Kind.database
             )
         }
         for (annotation in pdfDocumentAnnotations.values) {
-            val key = AnnotationKey(key = annotation.key, type = AnnotationKey.Kind.document)
+            val key = AnnotationKey(key = annotation.key, type = Kind.document)
             val sortIndex = annotation.sortIndex
             sortMap[sortIndex] = key
         }
@@ -1080,7 +1191,6 @@ class PdfReaderViewModel @Inject constructor(
                 }
                 if (databaseAnnotation.fontSize == null) {
                     Timber.i("PDFReaderActionHandler: ${databaseAnnotation.type} annotation ${databaseAnnotation.key} missing fontSize")
-                    return false
                 }
                 if (databaseAnnotation.rotation == null) {
                     Timber.i("PDFReaderActionHandler: ${databaseAnnotation.type} annotation ${databaseAnnotation.key} missing rotation")
@@ -1138,9 +1248,7 @@ class PdfReaderViewModel @Inject constructor(
     ) {
         Timber.i("PdfReaderViewModel: database annotation changed")
 
-        val keys = (viewState.snapshotKeys
-            ?: viewState.sortedKeys).filter { it.type == AnnotationKey.Kind.database }
-            .toMutableList()
+        val databaseAnnotations = this.databaseAnnotations!!
         var comments = this.comments
         var selectKey: AnnotationKey? = null
         var selectionDeleted = false
@@ -1151,11 +1259,11 @@ class PdfReaderViewModel @Inject constructor(
         var insertedPdfAnnotations = mutableListOf<Annotation>()
 
         for (index in modifications) {
-            if (index >= keys.size) {
-                Timber.w("Tried modifying index out of bounds! keys.count=${keys.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
+            if (index >= databaseAnnotations.size) {
+                Timber.w("Tried modifying index out of bounds! keys.count=${databaseAnnotations.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
                 continue
             }
-            val key = keys[index]
+            val key = AnnotationKey(key = databaseAnnotations[index]!!.key, type = Kind.database)
             val item = objects.where().key(key.key).findFirst() ?: continue
             val annotation = PDFDatabaseAnnotation.init(item = item) ?: continue
 
@@ -1182,13 +1290,13 @@ class PdfReaderViewModel @Inject constructor(
         var shouldCancelUpdate = false
 
         for (index in deletions.reversed()) {
-            if (index >= keys.size) {
-                Timber.w("tried removing index out of bounds! keys.count=${keys.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
+            if (index >= databaseAnnotations.size) {
+                Timber.w("tried removing index out of bounds! keys.count=${databaseAnnotations.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
                 shouldCancelUpdate = true
                 break
             }
 
-            val key = keys.removeAt(index)
+            val key = AnnotationKey(key = databaseAnnotations[index]!!.key, type = Kind.database)
             Timber.i("delete key $key")
 
             if (viewState.selectedAnnotationKey == key) {
@@ -1209,21 +1317,17 @@ class PdfReaderViewModel @Inject constructor(
         }
 
         for (index in insertions) {
-            if (index > keys.size) {
-                Timber.w("tried inserting index out of bounds! keys.count=${keys.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
+            if (index > objects.size) {
+                Timber.w("tried inserting index out of bounds! keys.count=${objects.size}; index=$index; deletions=$deletions; insertions=$insertions; modifications=$modifications")
                 shouldCancelUpdate = true
                 break
             }
             val item = objects[index]!!
-            keys.add(
-                element = AnnotationKey(key = item.key, type = AnnotationKey.Kind.database),
-                index = index
-            )
             Timber.i("PDFReaderActionHandler: insert key ${item.key}")
 
             val annotation = PDFDatabaseAnnotation.init(item = item)
             if (annotation == null ){
-                Timber.w("PdfReaderViewModel: tried inserting unsupported annotation (${item.annotationType})! keys.count=${keys.size}; index=${index}; deletions=${deletions}; insertions=${insertions}; modifications=${modifications}")
+                Timber.w("PdfReaderViewModel: tried inserting unsupported annotation (${item.annotationType})! keys.count=${objects.size}; index=${index}; deletions=${deletions}; insertions=${insertions}; modifications=${modifications}")
                 shouldCancelUpdate = true
                 break
             }
@@ -1236,7 +1340,7 @@ class PdfReaderViewModel @Inject constructor(
                         annotation.type == org.zotero.android.database.objects.AnnotationType.note
                     if (!viewState.sidebarEditingEnabled && (sidebarVisible || isNote)) {
                         selectKey =
-                            AnnotationKey(key = item.key, type = AnnotationKey.Kind.database)
+                            AnnotationKey(key = item.key, type = Kind.database)
                         Timber.i("select new annotation")
                     }
 
@@ -1263,26 +1367,11 @@ class PdfReaderViewModel @Inject constructor(
             return
         }
 
-        val getSortIndex: (AnnotationKey) -> String? = { key ->
-            when (key.type) {
-                AnnotationKey.Kind.document -> {
-                    viewState.pdfDocumentAnnotations[key.key]?.sortIndex
-                }
+        val sortedKeys = createSortedKeys(
+            databaseAnnotations = objects,
+            pdfDocumentAnnotations = viewState.pdfDocumentAnnotations
+        )
 
-                AnnotationKey.Kind.database -> {
-                    objects.where().key(key.key).findFirst()?.annotationSortIndex
-                }
-            }
-        }
-        for (annotation in viewState.pdfDocumentAnnotations.values) {
-            val key = AnnotationKey(key = annotation.key, type = AnnotationKey.Kind.document)
-            val index = keys.index(key, sortedBy = { lKey, rKey ->
-                val lSortIndex = getSortIndex(lKey) ?: ""
-                val rSortIndex = getSortIndex(rKey) ?: ""
-                lSortIndex < rSortIndex
-            })
-            keys.add(element = key, index = index)
-        }
         pdfFragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
 
         for ((pdfAnnotation, annotation) in updatedPdfAnnotations) {
@@ -1343,14 +1432,14 @@ class PdfReaderViewModel @Inject constructor(
         if (viewState.snapshotKeys != null) {
             updateState {
                 copy(
-                    snapshotKeys = keys,
-                    sortedKeys = keys //TODO filter keys
+                    snapshotKeys = sortedKeys,
+                    sortedKeys = sortedKeys //TODO filter keys
                 )
             }
         } else {
             updateState {
                 copy(
-                    sortedKeys = keys
+                    sortedKeys = sortedKeys
                 )
             }
         }
@@ -1435,7 +1524,10 @@ class PdfReaderViewModel @Inject constructor(
 
     private fun updateAnnotationsList(forceNotShowAnnotationPopup: Boolean = false) {
         hidePspdfkitToolbars()
-        val showAnnotationPopup = !forceNotShowAnnotationPopup && !viewState.showSideBar && selectedAnnotation != null
+        var showAnnotationPopup = !forceNotShowAnnotationPopup && !viewState.showSideBar && selectedAnnotation != null
+        if (selectedAnnotation?.type == org.zotero.android.database.objects.AnnotationType.text) {
+            showAnnotationPopup = false
+        }
         if (showAnnotationPopup) {
             ScreenArguments.pdfAnnotationArgs = PdfAnnotationArgs(
                 selectedAnnotation = selectedAnnotation,
@@ -1543,12 +1635,12 @@ class PdfReaderViewModel @Inject constructor(
 
     override fun annotation(key: AnnotationKey): org.zotero.android.pdf.data.PDFAnnotation? {
         when (key.type) {
-            AnnotationKey.Kind.database -> {
+            Kind.database -> {
                 return this.databaseAnnotations!!.where().key(key.key).findFirst()
                     ?.let { PDFDatabaseAnnotation.init(item = it) }
             }
 
-            AnnotationKey.Kind.document -> {
+            Kind.document -> {
                 return viewState.pdfDocumentAnnotations[key.key]
             }
         }
@@ -1558,6 +1650,7 @@ class PdfReaderViewModel @Inject constructor(
         annotation: org.zotero.android.pdf.data.PDFAnnotation,
         color: Pair<String, Boolean>? = null,
         lineWidth: Float? = null,
+        fontSize: Float? = null,
         contents: String? = null,
         document: PdfDocument
     ) {
@@ -1569,6 +1662,11 @@ class PdfReaderViewModel @Inject constructor(
         if (lineWidth != null && lineWidth.rounded(3) != annotation.lineWidth) {
             changes.add(PdfAnnotationChanges.lineWidth)
         }
+
+        if (fontSize != null && fontSize != annotation.fontSize) {
+            changes.add(PdfAnnotationChanges.fontSize)
+        }
+
         if (color != null && color.first != annotation.color) {
             changes.add(PdfAnnotationChanges.color)
         }
@@ -1587,7 +1685,7 @@ class PdfReaderViewModel @Inject constructor(
             val (color, isDark) = color
             val (_color, alpha, blendMode) = AnnotationColorGenerator.color(
                 color,
-                isHighlight = (annotation.type == org.zotero.android.database.objects.AnnotationType.highlight),
+                type = annotation.type,
                 isDarkMode = isDark
             )
             pdfAnnotation.color = _color
@@ -1600,6 +1698,14 @@ class PdfReaderViewModel @Inject constructor(
         if (changes.contains(PdfAnnotationChanges.contents) && contents != null) {
             pdfAnnotation.contents = contents
         }
+
+        if (changes.contains(PdfAnnotationChanges.fontSize) && fontSize != null) {
+            val textAnnotation = pdfAnnotation as? FreeTextAnnotation
+            if (textAnnotation != null) {
+                textAnnotation.textSize = fontSize
+            }
+        }
+
         processAnnotationObserving(
             pdfAnnotation,
             PdfAnnotationChanges.stringValues(changes),
@@ -1620,7 +1726,7 @@ class PdfReaderViewModel @Inject constructor(
             val hexColor = annotation.color
             val (color, alpha, blendMode) = AnnotationColorGenerator.color(
                 colorHex = hexColor,
-                isHighlight = (annotation.type == org.zotero.android.database.objects.AnnotationType.highlight),
+                type = annotation.type,
                 isDarkMode = isDarkMode
             )
             pdfAnnotation.color = color
@@ -1633,21 +1739,22 @@ class PdfReaderViewModel @Inject constructor(
         }
 
         when (annotation.type) {
-            org.zotero.android.database.objects.AnnotationType.highlight, org.zotero.android.database.objects.AnnotationType.underline -> {
+            org.zotero.android.database.objects.AnnotationType.highlight,
+            org.zotero.android.database.objects.AnnotationType.underline -> {
                 val newBoundingBox =
                     annotation.boundingBox(boundingBoxConverter = annotationBoundingBoxConverter)
                 if (newBoundingBox != pdfAnnotation.boundingBox.rounded(3)) {
                     pdfAnnotation.boundingBox = newBoundingBox
                     changes.add(PdfAnnotationChanges.boundingBox)
 
-                    (pdfAnnotation as HighlightAnnotation).rects =
+                    (pdfAnnotation as TextMarkupAnnotation).rects =
                         annotation.rects(boundingBoxConverter = annotationBoundingBoxConverter)
                     changes.add(PdfAnnotationChanges.rects)
                 } else {
                     val newRects =
                         annotation.rects(boundingBoxConverter = annotationBoundingBoxConverter)
                     val oldRects =
-                        ((pdfAnnotation as HighlightAnnotation).rects).map { it.rounded(3) }
+                        ((pdfAnnotation as TextMarkupAnnotation).rects).map { it.rounded(3) }
                     if (newRects != oldRects) {
                         pdfAnnotation.rects = newRects
                         changes.add(PdfAnnotationChanges.rects)
@@ -2053,6 +2160,11 @@ class PdfReaderViewModel @Inject constructor(
         triggerEffect(PdfReaderViewEffect.ShowPdfSettings)
     }
 
+    fun navigateToPlainReader() {
+        ScreenArguments.pdfPlainReaderArgs = PdfPlainReaderArgs(this.document)
+        triggerEffect(PdfReaderViewEffect.ShowPdfPlainReader)
+    }
+
     override fun showToolOptions() {
         val tool = this.activeAnnotationTool ?: return
 
@@ -2062,9 +2174,11 @@ class PdfReaderViewModel @Inject constructor(
             AnnotationTool.INK -> {
                 size = this.activeLineWidth
             }
+            AnnotationTool.FREETEXT -> {
+                size = this.activeFontSize
+            }
             AnnotationTool.ERASER -> {
                 size = this.activeEraserSize
-
             }
             else -> {
                 size = null
@@ -2109,6 +2223,7 @@ class PdfReaderViewModel @Inject constructor(
         this@PdfReaderViewModel.pdfUiFragment.lifecycle.addObserver(object: DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 this@PdfReaderViewModel.pdfFragment = pdfUiFragment.pdfFragment!!
+                this@PdfReaderViewModel.pdfFragment.addDrawableProvider(searchResultHighlighter)
                 addDocumentListener2()
                 addOnAnnotationCreationModeChangeListener()
                 setOnPreparePopupToolbarListener()
@@ -2223,9 +2338,22 @@ class PdfReaderViewModel @Inject constructor(
         var blendMode: BlendMode? = null
 
         if (color != null) {
+            val type: org.zotero.android.database.objects.AnnotationType?
+
+            when(annotationTool) {
+                AnnotationTool.HIGHLIGHT -> {
+                    type = org.zotero.android.database.objects.AnnotationType.highlight
+                }
+                AnnotationTool.UNDERLINE -> {
+                    type = org.zotero.android.database.objects.AnnotationType.underline
+                }
+                else -> {
+                    type = null
+                }
+            }
             val (_color, _, bM) = AnnotationColorGenerator.color(
                 colorHex = color,
-                isHighlight = (annotationTool == AnnotationTool.HIGHLIGHT),
+                type = type,
                 isDarkMode = viewState.isDark
             )
             drawColor = _color
@@ -2246,6 +2374,10 @@ class PdfReaderViewModel @Inject constructor(
                 configureInk(drawColor, this.activeLineWidth)
             }
 
+            AnnotationTool.FREETEXT -> {
+                configureFreeText(drawColor, this.activeFontSize)
+            }
+
             AnnotationTool.HIGHLIGHT -> {
                 configureHighlight(drawColor)
             }
@@ -2256,6 +2388,10 @@ class PdfReaderViewModel @Inject constructor(
 
             AnnotationTool.SQUARE -> {
                 configureSquare(drawColor)
+            }
+
+            AnnotationTool.UNDERLINE -> {
+                configureUnderline(drawColor)
             }
 
             AnnotationTool.ERASER -> {
@@ -2275,6 +2411,19 @@ class PdfReaderViewModel @Inject constructor(
         pdfFragment.annotationConfiguration
             .put(
                 AnnotationTool.NOTE,
+                NoteAnnotationConfiguration.builder(context)
+                    .setDefaultColor(drawColor)
+                    .build()
+            )
+    }
+
+    private fun configureUnderline(drawColor: Int?) {
+        if (drawColor == null) {
+            return
+        }
+        pdfFragment.annotationConfiguration
+            .put(
+                AnnotationTool.UNDERLINE,
                 NoteAnnotationConfiguration.builder(context)
                     .setDefaultColor(drawColor)
                     .build()
@@ -2301,6 +2450,21 @@ class PdfReaderViewModel @Inject constructor(
                 AnnotationTool.HIGHLIGHT,
                 MarkupAnnotationConfiguration.builder(context, AnnotationTool.HIGHLIGHT) // Configure which color is used when creating ink annotations.
                     .setDefaultColor(drawColor)
+                    .build()
+            )
+
+    }
+
+    private fun configureFreeText(drawColor: Int?, textSize: Float) {
+        if (drawColor == null) {
+            return
+        }
+        pdfFragment.annotationConfiguration
+            .put(
+                AnnotationTool.FREETEXT,
+                FreeTextAnnotationConfiguration.builder(context)
+                    .setDefaultColor(drawColor)
+                    .setDefaultTextSize(textSize)
                     .build()
             )
 
@@ -2363,25 +2527,64 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun add(annotations: List<Annotation>) {
-        val finalAnnotations = splitIfNeededAndProcess(annotations = annotations)
+        val (keptAsIs, toRemove, toAdd) = transformIfNeeded(annotations = annotations)
+        val finalAnnotations = keptAsIs + toAdd
+        for (annotation in finalAnnotations) {
+            if (annotation.key == null) {
+                annotation.creator = viewState.displayName
+                annotation.customData =
+                    JSONObject().put(AnnotationsConfig.keyKey, KeyGenerator.newKey())
+            }
+        }
+
+        if (!toRemove.isEmpty() || !toAdd.isEmpty()) {
+            toRemove.forEach {
+                this.document.annotationProvider.removeAnnotationFromPage(it)
+            }
+            finalAnnotations.forEach {
+                this.document.annotationProvider.addAnnotationToPage(it)
+            }
+        }
 
         if (finalAnnotations.isEmpty()) {
             return
-        } else {
-            finalAnnotations.map { it.page }.toSet().forEach { pageIndex ->
-                thumbnailPreviewManager.store(
-                    pageIndex = pageIndex,
-                    key = viewState.key,
-                    document = this.document,
-                    libraryId = viewState.library.identifier,
-                    isDark = viewState.isDark,
-                )
-            }
+        }
+
+        val documentAnnotations = finalAnnotations.mapNotNull { annotation ->
+            val documentAnnotation = AnnotationConverter.annotation(
+                this.document,
+                annotation,
+                color = annotation.baseColor,
+                username = viewState.username,
+                displayName = viewState.displayName,
+                boundingBoxConverter = this.annotationBoundingBoxConverter
+            ) ?: return@mapNotNull null
+
+            this.annotationPreviewManager.store(
+                this.rawDocument,
+                annotation,
+                parentKey = viewState.key,
+                libraryId = viewState.library.identifier,
+                isDark = viewState.isDark,
+                annotationMaxSideSize = annotationMaxSideSize
+            )
+
+            documentAnnotation
+        }
+
+        documentAnnotations.map { it.page }.toSet().forEach { pageIndex ->
+            thumbnailPreviewManager.store(
+                pageIndex = pageIndex,
+                key = viewState.key,
+                document = this.document,
+                libraryId = viewState.library.identifier,
+                isDark = viewState.isDark,
+            )
         }
         val request = CreatePDFAnnotationsDbRequest(
             attachmentKey = viewState.key,
             libraryId = viewState.library.identifier,
-            annotations = finalAnnotations,
+            annotations = documentAnnotations,
             userId = viewState.userId,
             schemaController = this.schemaController,
             boundingBoxConverter = this.annotationBoundingBoxConverter
@@ -2412,16 +2615,22 @@ class PdfReaderViewModel @Inject constructor(
             is InkAnnotation -> {
                 AnnotationTool.INK
             }
+            is FreeTextAnnotation -> {
+                AnnotationTool.FREETEXT
+            }
+            is UnderlineAnnotation -> {
+                AnnotationTool.UNDERLINE
+            }
             else -> {
                 null
             }
         }
     }
 
-    private fun splitIfNeededAndProcess(annotations: List<Annotation>): List<PDFDocumentAnnotation> {
-        var toRemove = mutableListOf<Annotation>()
-        var toAdd = mutableListOf<Annotation>()
-        var pdfDocumentAnnotations = mutableListOf<PDFDocumentAnnotation>()
+    private fun transformIfNeeded(annotations: List<Annotation>): Triple<List<Annotation>, List<Annotation>, List<Annotation>> {
+        val keptAsIs = mutableListOf<Annotation>()
+        val toRemove = mutableListOf<Annotation>()
+        val toAdd = mutableListOf<Annotation>()
 
         for (annotation in annotations) {
             val tool = tool(annotation) ?:continue
@@ -2429,64 +2638,43 @@ class PdfReaderViewModel @Inject constructor(
             val activeColorString = activeColor
             val (_, _, blendMode) = AnnotationColorGenerator.color(
                 activeColor,
-                isHighlight = (annotation is HighlightAnnotation),
+                type = annotation.type.zoteroType(),
                 isDarkMode = viewState.isDark
             )
             annotation.blendMode = blendMode ?: BlendMode.NORMAL
 
-            if (annotation.key == null || annotation(AnnotationKey(key = annotation.key!!, type = AnnotationKey.Kind.database)) == null) {
+            if (annotation.key == null || annotation(AnnotationKey(key = annotation.key!!, type = Kind.database)) == null) {
             } else {
+                keptAsIs.add(annotation)
                 continue
             }
-            val splitAnnotations = splitIfNeeded(a = annotation, user = viewState.displayName)
 
-            if (splitAnnotations.size > 1) {
-                Timber.i("PdfReaderViewModel: did split annotations into ${splitAnnotations.size}")
-                toRemove.add(annotation)
-                toAdd.addAll(splitAnnotations)
+            val splitAnnotations = splitIfNeeded(a = annotation)
+
+            if (splitAnnotations.size <= 1) {
+                keptAsIs.add(annotation)
+                continue
             }
-
-            pdfDocumentAnnotations.addAll(
-                splitAnnotations.mapNotNull {
-                    AnnotationConverter.annotation(
-                        this.document,
-                        it,
-                        color = activeColorString,
-                        username = viewState.username,
-                        displayName = viewState.displayName,
-                        boundingBoxConverter = this.annotationBoundingBoxConverter
-                    )
-                })
-
-            for (pdfAnnotation in splitAnnotations) {
-                this.annotationPreviewManager.store(
-                    this.rawDocument,
-                    pdfAnnotation,
-                    parentKey = viewState.key,
-                    libraryId = viewState.library.identifier,
-                    isDark = viewState.isDark,
-                    annotationMaxSideSize = annotationMaxSideSize
-                )
-            }
+            Timber.i("PdfReaderViewModel: did split annotations into ${splitAnnotations.size}")
+            toRemove.add(annotation)
+            toAdd.addAll(splitAnnotations)
         }
-        toRemove.forEach {
-            this.document.annotationProvider.removeAnnotationFromPage(it)
-        }
-        toAdd.forEach {
-            this.document.annotationProvider.addAnnotationToPage(it)
-        }
-        return pdfDocumentAnnotations
+        return Triple(keptAsIs, toRemove, toAdd)
     }
 
-    private fun createAnnotations(
+    private fun createHighlightOrUnderlineAnnotations(
+        isHighlight: Boolean,
         splitRects: List<List<RectF>>,
-        original: HighlightAnnotation,
-    ): List<HighlightAnnotation> {
+        original: TextMarkupAnnotation,
+    ): List<TextMarkupAnnotation> {
         if (splitRects.size <= 1) {
             return listOf(original)
         }
         return splitRects.map { rects ->
-            val new = HighlightAnnotation(original.pageIndex, rects)
+            val new = if (isHighlight) HighlightAnnotation(
+                original.pageIndex,
+                rects
+            ) else UnderlineAnnotation(original.pageIndex, rects)
             new.boundingBox = AnnotationBoundingBoxCalculator.boundingBox(rects)
             new.alpha = original.alpha
             new.color = original.color
@@ -2497,7 +2685,7 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
-    private fun createAnnotations(splitPaths: List<List<List<PointF>>>, original: InkAnnotation): List<InkAnnotation> {
+    private fun createInkAnnotations(splitPaths: List<List<List<PointF>>>, original: InkAnnotation): List<InkAnnotation> {
         if (splitPaths.size <= 1) {
             return listOf(original)
         }
@@ -2514,13 +2702,18 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
-    private fun splitIfNeeded(a: Annotation, user: String): List<Annotation> {
-        val highlightAnnotation = a as? HighlightAnnotation
-        if (highlightAnnotation != null) {
-            val rects = highlightAnnotation.rects
+    private fun splitIfNeeded(a: Annotation): List<Annotation> {
+        if (a is HighlightAnnotation || a is UnderlineAnnotation ) {
+            a as TextMarkupAnnotation
+            val isHighlightAnnotation = a is HighlightAnnotation
+            val rects = a.rects
             val splitRects = AnnotationSplitter.splitRectsIfNeeded(rects = rects)
             if (splitRects != null) {
-                return createAnnotations(splitRects, original = highlightAnnotation)
+                return createHighlightOrUnderlineAnnotations(
+                    isHighlight = isHighlightAnnotation,
+                    splitRects = splitRects,
+                    original = a
+                )
             }
         }
         val inkAnnotation = a as? InkAnnotation
@@ -2528,13 +2721,8 @@ class PdfReaderViewModel @Inject constructor(
             val paths = inkAnnotation.lines
             val splitPaths = AnnotationSplitter.splitPathsIfNeeded(paths = paths)
             if (splitPaths != null) {
-                return createAnnotations(splitPaths, original = inkAnnotation)
+                return createInkAnnotations(splitPaths, original = inkAnnotation)
             }
-        }
-
-        if (a.key == null) {
-            a.creator = user
-            a.customData = JSONObject().put(AnnotationsConfig.keyKey, KeyGenerator.newKey())
         }
 
         return listOf(a)
@@ -2589,6 +2777,12 @@ class PdfReaderViewModel @Inject constructor(
                 AnnotationTool.INK -> {
                     defaults.setInkColorHex(hex)
                 }
+                AnnotationTool.FREETEXT -> {
+                    defaults.setTextColorHex(hex)
+                }
+                AnnotationTool.UNDERLINE -> {
+                    defaults.setUnderlineColorHex(hex)
+                }
                 else -> {
                     //no-op
                 }
@@ -2601,6 +2795,9 @@ class PdfReaderViewModel @Inject constructor(
                 }
                 AnnotationTool.INK -> {
                     defaults.setActiveLineWidth(size)
+                }
+                AnnotationTool.FREETEXT -> {
+                    defaults.setActiveFontSize(size)
                 }
                 else -> {
                     //no-op
@@ -2620,6 +2817,9 @@ class PdfReaderViewModel @Inject constructor(
                 AnnotationTool.ERASER -> {
                     this.activeEraserSize = size
                 }
+                AnnotationTool.FREETEXT -> {
+                    this.activeFontSize = size
+                }
                 else -> {
                     //no-op
                 }
@@ -2627,9 +2827,23 @@ class PdfReaderViewModel @Inject constructor(
         }
         var drawColor: Int? = null
         if (hex != null) {
+            val type: org.zotero.android.database.objects.AnnotationType?
+
+            when(tool) {
+                AnnotationTool.HIGHLIGHT -> {
+                    type = org.zotero.android.database.objects.AnnotationType.highlight
+                }
+                AnnotationTool.UNDERLINE -> {
+                    type = org.zotero.android.database.objects.AnnotationType.underline
+                }
+                else -> {
+                    type = null
+                }
+            }
+
             val (_color, _, bM) = AnnotationColorGenerator.color(
                 colorHex = hex,
-                isHighlight = (tool == AnnotationTool.HIGHLIGHT),
+                type = type,
                 isDarkMode = viewState.isDark
             )
             drawColor = _color
@@ -2649,7 +2863,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun set(comment: String, key: String) {
-        val annotation = annotation(AnnotationKey(key = key, type = AnnotationKey.Kind.database)) ?: return
+        val annotation = annotation(AnnotationKey(key = key, type = Kind.database)) ?: return
 
         val htmlComment = comment //TODO Use HtmlAttributedStringConverter
 
@@ -2659,7 +2873,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     override fun onCommentFocusFieldChange(annotationKey: String) {
-        val key = AnnotationKey(key = annotationKey, type = AnnotationKey.Kind.database)
+        val key = AnnotationKey(key = annotationKey, type = Kind.database)
         val annotation =
             annotation(key)
                 ?: return
@@ -2677,7 +2891,7 @@ class PdfReaderViewModel @Inject constructor(
 //        if (!annotation.isAuthor(viewState.userId)) {
 //            return
 //        }
-        val annotationKey = AnnotationKey(key = annotation.key, type = AnnotationKey.Kind.database)
+        val annotationKey = AnnotationKey(key = annotation.key, type = Kind.database)
         selectAnnotationFromDocument(annotationKey)
 
         val selected = annotation.tags.map { it.name }.toSet()
@@ -2710,7 +2924,7 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun set(lineWidth: Float, key: String) {
-        val annotation = annotation(AnnotationKey(key = key, type = AnnotationKey.Kind.database)) ?: return
+        val annotation = annotation(AnnotationKey(key = key, type = Kind.database)) ?: return
         update(annotation = annotation, lineWidth = lineWidth, document = this.document)
     }
 
@@ -2727,15 +2941,17 @@ class PdfReaderViewModel @Inject constructor(
         color: String,
         lineWidth: Float,
         pageLabel: String,
+        fontSize: Float,
         updateSubsequentLabels: Boolean,
-        highlightText: String,
+        text: String,
         key: String
     ) {
         val annotation =
-            annotation(AnnotationKey(key = key, type = AnnotationKey.Kind.database)) ?: return
+            annotation(AnnotationKey(key = key, type = Kind.database)) ?: return
         update(
             annotation = annotation,
             color = color to viewState.isDark,
+            fontSize = fontSize,
             lineWidth = lineWidth,
             document = this.document
         )
@@ -2745,7 +2961,7 @@ class PdfReaderViewModel @Inject constructor(
                 key = FieldKeys.Item.Annotation.pageLabel,
                 baseKey = null
             ) to pageLabel,
-            KeyBaseKeyPair(key = FieldKeys.Item.Annotation.text, baseKey = null) to highlightText
+            KeyBaseKeyPair(key = FieldKeys.Item.Annotation.text, baseKey = null) to text
         )
         val request = EditItemFieldsDbRequest(
             key = key,
@@ -2972,6 +3188,25 @@ class PdfReaderViewModel @Inject constructor(
         }
 
     }
+
+    override fun togglePdfSearch() {
+        ScreenArguments.pdfReaderSearchArgs = PdfReaderSearchArgs(
+            pdfDocument = this.document,
+            configuration = pdfFragment.configuration
+        )
+        updateState {
+            copy(showPdfSearch = !showPdfSearch)
+        }
+
+    }
+
+    override fun hidePdfSearch() {
+        updateState {
+            copy(
+                showPdfSearch = false
+            )
+        }
+    }
 }
 
 data class PdfReaderViewState(
@@ -3011,7 +3246,8 @@ data class PdfReaderViewState(
     val outlineSearchTerm: String = "",
     val isOutlineEmpty: Boolean = false,
     val thumbnailRows: ImmutableList<PdfReaderThumbnailRow> = persistentListOf(),
-    val selectedThumbnail: PdfReaderThumbnailRow? = null
+    val selectedThumbnail: PdfReaderThumbnailRow? = null,
+    val showPdfSearch: Boolean = false,
 ) : ViewState {
 
     fun isAnnotationSelected(annotationKey: String): Boolean {
@@ -3032,6 +3268,7 @@ sealed class PdfReaderViewEffect : ViewEffect {
     object NavigateBack : PdfReaderViewEffect()
     object ShowPdfFilters : PdfReaderViewEffect()
     object ShowPdfSettings : PdfReaderViewEffect()
+    object ShowPdfPlainReader: PdfReaderViewEffect()
     object ShowPdfAnnotationMore: PdfReaderViewEffect()
     object ShowPdfColorPicker: PdfReaderViewEffect()
     data class ShowPdfAnnotationAndUpdateAnnotationsList(val scrollToIndex: Int, val showAnnotationPopup: Boolean): PdfReaderViewEffect()

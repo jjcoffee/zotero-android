@@ -25,6 +25,7 @@ internal fun PdfReaderScreen(
     onBack: () -> Unit,
     navigateToPdfFilter: () -> Unit,
     navigateToPdfSettings: () -> Unit,
+    navigateToPdfPlainReader: () -> Unit,
     navigateToPdfColorPicker: () -> Unit,
     navigateToPdfAnnotation: () -> Unit,
     navigateToPdfAnnotationMore: () -> Unit,
@@ -101,6 +102,11 @@ internal fun PdfReaderScreen(
                     }
                     navigateToPdfSettings()
                 }
+
+                is PdfReaderViewEffect.ShowPdfPlainReader -> {
+                    viewModel.removeFragment()
+                    navigateToPdfPlainReader()
+                }
                 is PdfReaderViewEffect.ShowPdfColorPicker -> {
                     if (!layoutType.isTablet()) {
                         viewModel.removeFragment()
@@ -126,9 +132,14 @@ internal fun PdfReaderScreen(
                             onBack = onBack,
                             onShowHideSideBar = viewModel::toggleSideBar,
                             toPdfSettings = viewModel::navigateToPdfSettings,
+                            toPdfPlainReader = viewModel::navigateToPlainReader,
+                            showPdfSearch = viewState.showPdfSearch,
                             toggleToolbarButton = viewModel::toggleToolbarButton,
                             isToolbarButtonSelected = viewState.showCreationToolbar,
                             showSideBar = viewState.showSideBar,
+                            onShowHidePdfSearch = viewModel::togglePdfSearch,
+                            viewModel = viewModel,
+                            viewState = viewState
                         )
                     }
                 }
