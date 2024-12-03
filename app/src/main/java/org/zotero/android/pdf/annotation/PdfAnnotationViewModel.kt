@@ -16,6 +16,7 @@ import org.zotero.android.database.objects.AnnotationsConfig
 import org.zotero.android.pdf.annotation.data.PdfAnnotationColorResult
 import org.zotero.android.pdf.annotation.data.PdfAnnotationCommentResult
 import org.zotero.android.pdf.annotation.data.PdfAnnotationDeleteResult
+import org.zotero.android.pdf.annotation.data.PdfAnnotationFontSizeResult
 import org.zotero.android.pdf.annotation.data.PdfAnnotationSizeResult
 import org.zotero.android.pdf.data.PdfReaderCurrentThemeEventStream
 import org.zotero.android.pdf.data.PdfReaderThemeDecider
@@ -30,13 +31,14 @@ internal class PdfAnnotationViewModel @Inject constructor(
     private val pdfReaderThemeDecider: PdfReaderThemeDecider,
 ) : BaseViewModel2<PdfAnnotationViewState, PdfAnnotationViewEffect>(PdfAnnotationViewState()) {
 
+    private var isDeletingAnnotation = false
+
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun onEvent(tagPickerResult: TagPickerResult) {
         if (tagPickerResult.callPoint == TagPickerResult.CallPoint.PdfReaderAnnotationScreen) {
             updateState {
                 copy(tags = tagPickerResult.tags)
             }
-
             EventBus.getDefault().post(TagPickerResult(tagPickerResult.tags, TagPickerResult.CallPoint.PdfReaderScreen))
         }
     }
@@ -62,7 +64,8 @@ internal class PdfAnnotationViewModel @Inject constructor(
                 annotation = annotation,
                 tags = args.selectedAnnotation.tags,
                 commentFocusText = annotation.comment,
-                size = annotation.lineWidth ?: 1.0f
+                size = annotation.lineWidth ?: 1.0f,
+                fontSize = annotation.fontSize ?: 12.0f
             )
         }
     }
@@ -99,12 +102,14 @@ internal class PdfAnnotationViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        EventBus.getDefault().post(
-            PdfAnnotationCommentResult(
-                annotationKey = viewState.annotation!!.key,
-                comment = viewState.commentFocusText
+        if (!isDeletingAnnotation) {
+            EventBus.getDefault().post(
+                PdfAnnotationCommentResult(
+                    annotationKey = viewState.annotation!!.key,
+                    comment = viewState.commentFocusText
+                )
             )
-        )
+        }
         EventBus.getDefault().unregister(this)
         super.onCleared()
     }
@@ -140,12 +145,36 @@ internal class PdfAnnotationViewModel @Inject constructor(
     }
 
     fun onDeleteAnnotation() {
+        isDeletingAnnotation = true
         EventBus.getDefault().post(
             PdfAnnotationDeleteResult(
-                key = viewState.annotation!!.key,
+                key = viewState.annotation!!.readerKey,
             )
         )
         triggerEffect(PdfAnnotationViewEffect.Back)
+    }
+
+    fun onFontSizeDecrease() {
+        updateState {
+            copy(fontSize = viewState.fontSize - 0.5f)
+        }
+        postFontSizeChangeUpdate()
+    }
+
+    fun onFontSizeIncrease() {
+        updateState {
+            copy(fontSize = viewState.fontSize + 0.5f)
+        }
+        postFontSizeChangeUpdate()
+    }
+
+    private fun postFontSizeChangeUpdate() {
+        EventBus.getDefault().post(
+            PdfAnnotationFontSizeResult(
+                key = viewState.annotation!!.key,
+                size = viewState.fontSize
+            )
+        )
     }
 
 }
@@ -157,6 +186,7 @@ internal data class PdfAnnotationViewState(
     val commentFocusText: String = "",
     val color: String = "",
     val colors: List<String> = emptyList(),
+    val fontSize: Float = 12f,
     val size: Float = 1.0f,
 ) : ViewState
 

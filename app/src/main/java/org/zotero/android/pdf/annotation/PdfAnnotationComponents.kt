@@ -1,16 +1,13 @@
-package org.zotero.android.pdf.annotationmore
+package org.zotero.android.pdf.annotation
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -38,47 +35,16 @@ import org.zotero.android.uicomponents.theme.CustomPalette
 import org.zotero.android.uicomponents.theme.CustomTheme
 
 @Composable
-internal fun MoreHighlightText(
-    annotationColor: Color,
-    viewState: PdfAnnotationMoreViewState,
-    layoutType: CustomLayoutSize.LayoutType
-) {
-    Box(
-        modifier = Modifier
-            .padding(vertical = 8.dp)
-            .fillMaxWidth()
-            .height(IntrinsicSize.Max)
-    ) {
-        Box(
-            modifier = Modifier
-                .padding(start = 8.dp)
-                .width(3.dp)
-                .fillMaxHeight()
-                .background(annotationColor)
-        )
-        Text(
-            modifier = Modifier.padding(start = 20.dp, end = 16.dp),
-            text = viewState.highlightText,
-            color = CustomTheme.colors.primaryContent,
-            style = CustomTheme.typography.default,
-            fontSize = layoutType.calculatePdfSidebarTextSize(),
-        )
-    }
-}
-
-@Composable
-internal fun ColumnScope.MoreColorPicker(
-    viewState: PdfAnnotationMoreViewState,
-    viewModel: PdfAnnotationMoreViewModel
+internal fun ColorPicker(
+    viewState: PdfAnnotationViewState,
+    viewModel: PdfAnnotationViewModel
 ) {
     val selectedColor = viewState.color
     FlowRow(
-        modifier = Modifier
-            .align(Alignment.CenterHorizontally)
-            .padding(horizontal = 10.dp),
+        modifier = Modifier.padding(horizontal = 10.dp),
     ) {
         viewState.colors.forEach { listColorHex ->
-            MoreFilterCircle(
+            FilterCircle(
                 hex = listColorHex,
                 isSelected = listColorHex == selectedColor,
                 onClick = { viewModel.onColorSelected(listColorHex) })
@@ -87,11 +53,11 @@ internal fun ColumnScope.MoreColorPicker(
 }
 
 @Composable
-internal fun MoreFilterCircle(hex: String, isSelected: Boolean, onClick: () -> Unit) {
+internal fun FilterCircle(hex: String, isSelected: Boolean, onClick: () -> Unit) {
     val color = android.graphics.Color.parseColor(hex)
     Canvas(modifier = Modifier
         .padding(4.dp)
-        .size(28.dp)
+        .size(32.dp)
         .clickable(
             interactionSource = remember { MutableInteractionSource() },
             indication = null,
@@ -108,29 +74,23 @@ internal fun MoreFilterCircle(hex: String, isSelected: Boolean, onClick: () -> U
     })
 }
 
-
 @Composable
-internal fun MoreSizeSelector(
-    viewState: PdfAnnotationMoreViewState,
-    viewModel: PdfAnnotationMoreViewModel,
+internal fun SizeSelector(
+    viewState: PdfAnnotationViewState,
+    viewModel: PdfAnnotationViewModel,
     layoutType: CustomLayoutSize.LayoutType,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
-            modifier = Modifier.padding(end = 10.dp),
-            text = stringResource(id = Strings.pdf_annotation_popover_line_width),
+            modifier = Modifier.padding(horizontal = 10.dp),
+            text = stringResource(id = Strings.size),
             color = CustomTheme.colors.pdfSizePickerColor,
             style = CustomTheme.typography.default,
             fontSize = layoutType.calculatePdfSidebarTextSize(),
         )
         Slider(
             modifier = Modifier.weight(1f),
-            value = viewState.lineWidth,
+            value = viewState.size,
             onValueChange = { viewModel.onSizeChanged(it) },
             colors = SliderDefaults.colors(
                 activeTrackColor = CustomTheme.colors.zoteroDefaultBlue,
@@ -139,8 +99,8 @@ internal fun MoreSizeSelector(
             valueRange = 0.5f..25f
         )
         Text(
-            modifier = Modifier.padding(start = 10.dp),
-            text = String.format("%.1f", viewState.lineWidth),
+            modifier = Modifier.padding(horizontal = 10.dp),
+            text = String.format("%.1f", viewState.size),
             color = CustomTheme.colors.pdfSizePickerColor,
             style = CustomTheme.typography.default,
             fontSize = layoutType.calculatePdfSidebarTextSize(),
@@ -149,9 +109,10 @@ internal fun MoreSizeSelector(
 }
 
 @Composable
-internal fun MoreFontSizeSelector(
-    viewState: PdfAnnotationMoreViewState,
-    viewModel: PdfAnnotationMoreViewModel,
+internal fun FontSizeSelector(
+    fontSize: Float,
+    onFontSizeDecrease: () -> Unit,
+    onFontSizeIncrease: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -161,7 +122,7 @@ internal fun MoreFontSizeSelector(
     ) {
         Row(modifier = Modifier.align(Alignment.CenterStart), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = String.format("%.1f", viewState.fontSize),
+                text = String.format("%.1f", fontSize),
                 color = CustomTheme.colors.defaultTextColor,
                 style = CustomTheme.typography.default,
                 fontSize = 16.sp,
@@ -176,9 +137,9 @@ internal fun MoreFontSizeSelector(
         }
 
         Row(modifier = Modifier.align(Alignment.CenterEnd)) {
-            FontSizeChangeButton(text = "-", onClick = viewModel::onFontSizeDecrease)
+            FontSizeChangeButton(text = "-", onClick = onFontSizeDecrease)
             Spacer(modifier = Modifier.width(2.dp))
-            FontSizeChangeButton(text = "+", onClick = viewModel::onFontSizeIncrease)
+            FontSizeChangeButton(text = "+", onClick = onFontSizeIncrease)
         }
     }
 }
@@ -208,35 +169,6 @@ private fun FontSizeChangeButton(text: String, onClick: (() -> Unit)) {
             color = CustomTheme.colors.defaultTextColor,
             style = CustomTheme.typography.default,
             fontSize = 22.sp,
-        )
-    }
-}
-
-@Composable
-internal fun MoreUnderlineText(
-    annotationColor: Color,
-    viewState: PdfAnnotationMoreViewState,
-    layoutType: CustomLayoutSize.LayoutType
-) {
-    Box(
-        modifier = Modifier
-            .padding(vertical = 8.dp)
-            .fillMaxWidth()
-            .height(IntrinsicSize.Max)
-    ) {
-        Box(
-            modifier = Modifier
-                .padding(start = 8.dp)
-                .width(3.dp)
-                .fillMaxHeight()
-                .background(annotationColor)
-        )
-        Text(
-            modifier = Modifier.padding(start = 20.dp, end = 16.dp),
-            text = viewState.underlineText,
-            color = CustomTheme.colors.primaryContent,
-            style = CustomTheme.typography.default,
-            fontSize = layoutType.calculatePdfSidebarTextSize(),
         )
     }
 }

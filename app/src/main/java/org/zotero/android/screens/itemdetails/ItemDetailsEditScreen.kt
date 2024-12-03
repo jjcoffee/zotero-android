@@ -15,7 +15,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.Text
-import androidx.compose.material.ripple.rememberRipple
+import androidx.compose.material.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -123,12 +123,11 @@ private fun ItemType(
         modifier = Modifier
             .safeClickable(
                 interactionSource = remember { MutableInteractionSource() },
-                indication = rememberRipple(),
+                indication = ripple(),
                 onClick = onItemTypeClicked
             )
     ) {
         Column(
-            modifier = Modifier.padding(start = 28.dp + layoutType.calculateItemCreatorDeleteStartPadding())
         ) {
             FieldRow(
                 detailTitle = stringResource(id = Strings.item_type),
@@ -157,7 +156,7 @@ private fun LazyListScope.listOfCreatorRows(
                 modifier = Modifier
                     .safeClickable(
                         interactionSource = remember { MutableInteractionSource() },
-                        indication = rememberRipple(),
+                        indication = ripple(),
                         onClick = { onCreatorClicked(creator) }
                     )
                     .draggedItem(reorderState.offsetByIndex(index + numberOfRowsInLazyColumnBeforeListOfCreatorsStarts))
@@ -192,17 +191,52 @@ private fun ListOfEditFieldRows(
         } else {
             field.valueOrAdditionalInfo
         }
-        FieldEditableRow(
-            key = field.key,
-            fieldId = fieldId,
-            detailTitle = title,
-            detailValue = value,
-            layoutType = layoutType,
-            textColor = CustomTheme.colors.primaryContent,
-            onValueChange = onValueChange,
-            isMultilineAllowed = field.key == FieldKeys.Item.extra,
-            onFocusChanges = onFocusChanges
-        )
+
+        // We make all the fields, except title, to be not editable for standalone attachments.
+        if (viewState.data.isAttachment) {
+            FieldReadOnlyRow(layoutType, title, value)
+        } else {
+            FieldEditableRow(
+                key = field.key,
+                fieldId = fieldId,
+                detailTitle = title,
+                detailValue = value,
+                layoutType = layoutType,
+                textColor = CustomTheme.colors.primaryContent,
+                onValueChange = onValueChange,
+                isMultilineAllowed = field.key == FieldKeys.Item.extra,
+                onFocusChanges = onFocusChanges
+            )
+        }
+
+    }
+}
+
+@Composable
+private fun FieldReadOnlyRow(
+    layoutType: CustomLayoutSize.LayoutType,
+    title: String,
+    value: String
+) {
+    Column(
+        modifier = Modifier
+            .safeClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = ripple(),
+                onClick = {
+                    //no action on tap, but still show ripple effect
+                }
+            )
+    ) {
+        Column {
+            FieldRow(
+                detailTitle = title,
+                detailValue = value,
+                layoutType = layoutType,
+                showDivider = false
+            )
+        }
+        CustomDivider()
     }
 }
 
