@@ -41,9 +41,10 @@ internal fun AllItemsScreen(
     navigateToCollectionsScreen: () -> Unit,
     navigateToSinglePicker: () -> Unit,
     navigateToAddByIdentifier: (addByIdentifierParams: String) -> Unit,
+    navigateToRetrieveMetadata: (params: String) -> Unit,
     navigateToAllItemsSort: () -> Unit,
     navigateToCollectionPicker: () -> Unit,
-    navigateToItemDetails: () -> Unit,
+    navigateToItemDetails: (String) -> Unit,
     navigateToAddOrEditNote: () -> Unit,
     navigateToVideoPlayerScreen: () -> Unit,
     navigateToImageViewerScreen: () -> Unit,
@@ -65,7 +66,7 @@ internal fun AllItemsScreen(
             when (val consumedEffect = viewEffect?.consume()) {
                 null -> Unit
                 is AllItemsViewEffect.ShowCollectionsEffect -> navigateToCollectionsScreen()
-                is AllItemsViewEffect.ShowItemDetailEffect -> navigateToItemDetails()
+                is AllItemsViewEffect.ShowItemDetailEffect -> navigateToItemDetails(consumedEffect.screenArgs)
                 is AllItemsViewEffect.ShowAddOrEditNoteEffect -> navigateToAddOrEditNote()
                 AllItemsViewEffect.ShowFilterEffect -> {
                     navigateToTagFilter()
@@ -77,6 +78,10 @@ internal fun AllItemsScreen(
 
                 is AllItemsViewEffect.ShowAddByIdentifierEffect -> {
                     navigateToAddByIdentifier(consumedEffect.params)
+                }
+
+                is AllItemsViewEffect.ShowRetrieveMetadataDialogEffect -> {
+                    navigateToRetrieveMetadata(consumedEffect.params)
                 }
 
                 AllItemsViewEffect.ShowSortPickerEffect -> {

@@ -19,6 +19,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import org.zotero.android.architecture.EventBusConstants
+import org.zotero.android.architecture.navigation.ARG_RETRIEVE_METADATA
 import org.zotero.android.architecture.navigation.CommonScreenDestinations
 import org.zotero.android.architecture.navigation.DashboardTopLevelDialogs
 import org.zotero.android.architecture.navigation.ZoteroNavigation
@@ -40,6 +41,7 @@ import org.zotero.android.architecture.navigation.zoterWebViewScreen
 import org.zotero.android.architecture.ui.CustomLayoutSize
 import org.zotero.android.pdf.pdfReaderNavScreensForPhone
 import org.zotero.android.pdf.toPdfScreen
+import org.zotero.android.screens.addbyidentifier.ui.AddByIdentifierScreen
 import org.zotero.android.screens.collectionedit.collectionEditNavScreens
 import org.zotero.android.screens.collectionedit.toCollectionEditScreen
 import org.zotero.android.screens.collectionpicker.CollectionPickerScreen
@@ -49,13 +51,13 @@ import org.zotero.android.screens.dashboard.DashboardViewEffect
 import org.zotero.android.screens.dashboard.DashboardViewModel
 import org.zotero.android.screens.dashboard.DashboardViewState
 import org.zotero.android.screens.filter.FilterScreenPhone
+import org.zotero.android.screens.retrievemetadata.RetrieveMetadataScreen
 import org.zotero.android.screens.scanbarcode.ui.ScanBarcodeScreen
 import org.zotero.android.screens.settings.settingsNavScreens
 import org.zotero.android.screens.settings.toSettingsScreen
 import org.zotero.android.screens.sortpicker.sortPickerNavScreens
 import org.zotero.android.screens.sortpicker.toSortPicker
 import org.zotero.android.screens.tagpicker.TagPickerScreen
-import org.zotero.android.screens.addbyidentifier.ui.AddByIdentifierScreen
 import org.zotero.android.uicomponents.navigation.ZoteroNavHost
 import org.zotero.android.uicomponents.singlepicker.SinglePickerScreen
 import org.zotero.android.uicomponents.theme.CustomTheme
@@ -134,6 +136,7 @@ internal fun DashboardRootPhoneNavigation(
                     navigateToVideoPlayerScreen = navigation::toVideoPlayerScreen,
                     navigateToImageViewerScreen = navigation::toImageViewerScreen,
                     navigateToZoterWebViewScreen = navigation::toZoteroWebViewScreen,
+                    navigateToRetrieveMetadata = navigation::toRetrieveMetadata,
                     navigateToTagFilter = navigation::toTagFilter,
                     navigateToAddByIdentifier = navigation::toAddByIdentifier,
                     navigateToCollectionPicker = navigation::toCollectionPicker,
@@ -172,6 +175,15 @@ internal fun DashboardRootPhoneNavigation(
                     arguments = listOf(),
                 ) {
                     TagPickerScreen(onBack = navigation::onBack)
+                }
+
+                composable(
+                    route = "${DashboardRootPhoneDestinations.RETRIEVE_METADATA}/{$ARG_RETRIEVE_METADATA}",
+                    arguments = listOf(
+                        navArgument(ARG_RETRIEVE_METADATA) { type = NavType.StringType },
+                    ),
+                ) {
+                    RetrieveMetadataScreen(onBack = navigation::onBack)
                 }
 
                 composable(
@@ -255,6 +267,7 @@ private object DashboardRootPhoneDestinations {
     const val TAG_FILTER = "tagFilter"
     const val COLLECTION_PICKER = "collectionPicker"
     const val SCAN_BARCODE = "scanBarcode"
+    const val RETRIEVE_METADATA = "retrieveMetadata"
 
 }
 
@@ -282,6 +295,10 @@ private fun ZoteroNavigation.toCollectionPicker() {
 
 private fun ZoteroNavigation.toTagFilter() {
     navController.navigate(DashboardRootPhoneDestinations.TAG_FILTER)
+}
+
+private fun ZoteroNavigation.toRetrieveMetadata(args: String) {
+    navController.navigate("${DashboardRootPhoneDestinations.RETRIEVE_METADATA}/$args")
 }
 
 private fun toAllItems(

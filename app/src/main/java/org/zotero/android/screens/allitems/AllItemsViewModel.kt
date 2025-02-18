@@ -72,6 +72,7 @@ import org.zotero.android.screens.itemdetails.data.DetailType
 import org.zotero.android.screens.itemdetails.data.ItemDetailsArgs
 import org.zotero.android.screens.mediaviewer.image.ImageViewerArgs
 import org.zotero.android.screens.mediaviewer.video.VideoPlayerArgs
+import org.zotero.android.screens.retrievemetadata.data.RetrieveMetadataArgs
 import org.zotero.android.screens.sortpicker.data.SortPickerArgs
 import org.zotero.android.sync.Collection
 import org.zotero.android.sync.CollectionIdentifier
@@ -177,8 +178,9 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     private fun showItemDetail(type: DetailType, library: Library) {
-        ScreenArguments.itemDetailsArgs = ItemDetailsArgs(type, library = library, childKey = null)
-        triggerEffect(AllItemsViewEffect.ShowItemDetailEffect)
+        val args = ItemDetailsArgs(type, library = library, childKey = null)
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+        triggerEffect(AllItemsViewEffect.ShowItemDetailEffect(encodedArgs))
     }
 
     fun init(isTablet: Boolean) = initOnce {
@@ -499,12 +501,13 @@ internal class AllItemsViewModel @Inject constructor(
                 triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect)
             }
             else -> {
-                ScreenArguments.itemDetailsArgs = ItemDetailsArgs(
+                val args = ItemDetailsArgs(
                     DetailType.preview(key = item.key),
                     library = this.library,
                     childKey = null
                 )
-                triggerEffect(AllItemsViewEffect.ShowItemDetailEffect)
+                val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+                triggerEffect(AllItemsViewEffect.ShowItemDetailEffect(encodedArgs))
             }
         }
     }
@@ -698,6 +701,14 @@ internal class AllItemsViewModel @Inject constructor(
                 is LongPressOptionItem.TrashRestore -> {
                     set(trashed = false, setOf(longPressOptionItem.item.key))
                 }
+
+                is LongPressOptionItem.RetrieveMetadata -> {
+                    showRetrieveMetadataDialog(
+                        itemKey = longPressOptionItem.item.key,
+                        libraryId = longPressOptionItem.item.libraryId!!
+                    )
+                }
+
                 else -> {}
             }
         }
@@ -715,6 +726,16 @@ internal class AllItemsViewModel @Inject constructor(
         )
         triggerEffect(AllItemsViewEffect.ShowCollectionPickerEffect)
     }
+
+    private fun showRetrieveMetadataDialog(itemKey: String, libraryId: LibraryIdentifier) {
+        val args = RetrieveMetadataArgs(
+            itemKey = itemKey,
+            libraryId = libraryId,
+        )
+        val params = navigationParamsMarshaller.encodeObjectToBase64(args)
+        triggerEffect(AllItemsViewEffect.ShowRetrieveMetadataDialogEffect(params))
+    }
+
 
     private fun createParent(item: RItem) {
         val key = item.key
@@ -756,6 +777,12 @@ internal class AllItemsViewModel @Inject constructor(
 
         if (item.rawType == ItemTypes.attachment && item.parent == null) {
             actions.add(LongPressOptionItem.CreateParentItem(item))
+        }
+
+        val attachment = allItemsProcessor.attachment(item.key, null)
+        val contentType = (attachment?.first?.type as? Attachment.Kind.file)?.contentType
+        if (item.rawType == ItemTypes.attachment && item.parent == null && contentType == "application/pdf") {
+            actions.add(LongPressOptionItem.RetrieveMetadata(item))
         }
 
         val accessory = allItemsProcessor.getItemAccessoryByKey(item.key)
@@ -1140,7 +1167,7 @@ internal data class AllItemsViewState(
 
 internal sealed class AllItemsViewEffect : ViewEffect {
     object ShowCollectionsEffect: AllItemsViewEffect()
-    object ShowItemDetailEffect: AllItemsViewEffect()
+    data class ShowItemDetailEffect(val screenArgs: String): AllItemsViewEffect()
     object ShowAddOrEditNoteEffect: AllItemsViewEffect()
     object ShowItemTypePickerEffect : AllItemsViewEffect()
     data class ShowAddByIdentifierEffect(val params: String) : AllItemsViewEffect()
@@ -1155,4 +1182,5 @@ internal sealed class AllItemsViewEffect : ViewEffect {
     data class NavigateToPdfScreen(val params: String) : AllItemsViewEffect()
     object ScreenRefresh : AllItemsViewEffect()
     object ShowScanBarcode: AllItemsViewEffect()
+    data class ShowRetrieveMetadataDialogEffect(val params: String) : AllItemsViewEffect()
 }
