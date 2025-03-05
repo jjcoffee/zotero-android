@@ -15,23 +15,32 @@ import javax.inject.Singleton
 class ShareRawAttachmentLoader @Inject constructor() {
 
     private lateinit var loadedAttachment: Result<RawAttachment>
+    
+    fun loadFromIntent(intent: Intent) {
+        val bundleExtras = intent.extras
+        if (bundleExtras != null
+            && (bundleExtras.containsKey(Intent.EXTRA_STREAM)
+                    || bundleExtras.containsKey(Intent.EXTRA_TEXT))
+        ) {
+            loadFromIntentExtras(bundleExtras)
+        } else {
+            loadFromIntentData(intent.data)
+        }
+    }
 
-    fun loadAttachment(bundleExtras: Bundle) {
+    private fun loadFromIntentData(data: Uri?) {
+        if (data == null) {
+            loadedAttachment = Result.Failure(AttachmentState.Error.cantLoadWebData)
+        } else {
+            loadedAttachment = Result.Success(RawAttachment.fileUrl(data))
+        }
+
+    }
+
+    private fun loadFromIntentExtras(bundleExtras: Bundle) {
         val urlPath = bundleExtras.getString(Intent.EXTRA_TEXT)
         if (urlPath != null) {
-            val lastPathSegment = urlPath.toUri().lastPathSegment
-            if (lastPathSegment?.contains(".") == true) {
-                loadedAttachment =
-                    Result.Success(RawAttachment.remoteFileUrl(
-                        url = urlPath,
-                        contentType = "",
-                        cookies = "",
-                        userAgent = "",
-                        referrer = ""
-                    ))
-            } else {
-                loadedAttachment = Result.Success(RawAttachment.remoteUrl(urlPath))
-            }
+            loadedAttachment = Result.Success(RawAttachment.remoteUrl(urlPath))
             return
         }
         val fileContentUri = bundleExtras.getSupportParcelable(Intent.EXTRA_STREAM, Uri::class.java)
@@ -49,13 +58,12 @@ class ShareRawAttachmentLoader @Inject constructor() {
         }
     }
 
-    fun doesBundleContainShareData(bundleExtras: Bundle?): Boolean {
-        if (bundleExtras == null) {
-            return false
-        }
-        val urlPath = bundleExtras.getString(Intent.EXTRA_TEXT)
-        val fileContentUri = bundleExtras.getSupportParcelable(Intent.EXTRA_STREAM, Uri::class.java)
-        return urlPath != null || fileContentUri != null
+    fun doesIntentContainShareData(intent: Intent): Boolean {
+        val bundleExtras = intent.extras
+        val urlPath = bundleExtras?.getString(Intent.EXTRA_TEXT)
+        val fileContentUri = bundleExtras?.getSupportParcelable(Intent.EXTRA_STREAM, Uri::class.java)
+        val dataPath = intent.data
+        return urlPath != null || fileContentUri != null || dataPath != null
     }
 
 }
