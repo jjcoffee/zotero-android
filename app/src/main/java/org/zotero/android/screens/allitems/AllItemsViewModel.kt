@@ -341,13 +341,17 @@ internal class AllItemsViewModel @Inject constructor(
         updatedDownloadingAccessories: SnapshotStateMap<String, ItemCellModel.Accessory?>?
     ) {
         viewModelScope.launch {
+            val newItemCellModels = updatedItemCellModels ?: viewState.itemCellModels
+            val maybeFirstItemAfterUpdate = newItemCellModels.firstOrNull()
+            val wasTheFirstItemRecentlyAdded = maybeFirstItemAfterUpdate != null && !viewState.itemCellModels.any { it.key ==  maybeFirstItemAfterUpdate.key}
             updateState {
                 copy(
-                    itemCellModels = updatedItemCellModels ?: viewState.itemCellModels,
+                    itemCellModels = newItemCellModels,
                     accessoryBeingDownloaded = updatedDownloadingAccessories
                         ?: viewState.accessoryBeingDownloaded
                 )
             }
+            triggerEffect(AllItemsViewEffect.MaybeScrollToTop(shouldScrollToTop = wasTheFirstItemRecentlyAdded))
         }
 
     }
@@ -467,15 +471,16 @@ internal class AllItemsViewModel @Inject constructor(
 
     private fun showNoteCreation(title: AddOrEditNoteArgs.TitleData?, libraryId: LibraryIdentifier) {
         val args = AddOrEditNoteArgs(
-            text = "",
-            tags = listOf(),
             title = title,
             key = KeyGenerator.newKey(),
             libraryId = libraryId,
             readOnly = false,
             isFromDashboard = true,
         )
-        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(
+            data = args,
+            charset = StandardCharsets.UTF_8
+        )
         triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect(encodedArgs))
     }
 
@@ -486,20 +491,21 @@ internal class AllItemsViewModel @Inject constructor(
                 if (note == null) {
                     return
                 }
-                val tags = item.tags!!.map({ Tag(tag = it) })
                 val library = this.library
                 val args = AddOrEditNoteArgs(
-                    text = note.text,
-                    tags = tags,
                     title = null,
                     libraryId = library.identifier,
                     readOnly = !library.metadataEditable,
                     key = note.key,
                     isFromDashboard = true
                 )
-                val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(args)
+                val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(
+                    data = args,
+                    charset = StandardCharsets.UTF_8
+                )
                 triggerEffect(AllItemsViewEffect.ShowAddOrEditNoteEffect(encodedArgs))
             }
+
             else -> {
                 val args = ItemDetailsArgs(
                     DetailType.preview(key = item.key),
@@ -767,14 +773,14 @@ internal class AllItemsViewModel @Inject constructor(
 
         val actions = mutableListOf<LongPressOptionItem>()
 
-        if (item.rawType == ItemTypes.attachment && item.parent == null) {
-            actions.add(LongPressOptionItem.CreateParentItem(item))
-        }
-
         val attachment = allItemsProcessor.attachment(item.key, null)
         val contentType = (attachment?.first?.type as? Attachment.Kind.file)?.contentType
         if (item.rawType == ItemTypes.attachment && item.parent == null && contentType == "application/pdf") {
             actions.add(LongPressOptionItem.RetrieveMetadata(item))
+        }
+
+        if (item.rawType == ItemTypes.attachment && item.parent == null) {
+            actions.add(LongPressOptionItem.CreateParentItem(item))
         }
 
         val accessory = allItemsProcessor.getItemAccessoryByKey(item.key)
@@ -930,6 +936,14 @@ internal class AllItemsViewModel @Inject constructor(
         showDeleteItemsConfirmation(getSelectedKeys())
     }
 
+    fun onDownloadSelectedAttachments() {
+        allItemsProcessor.downloadSelectedAttachments(getSelectedKeys())
+    }
+
+    fun onRemoveSelectedAttachments() {
+        allItemsProcessor.removeSelectedAttachments(getSelectedKeys())
+    }
+
     fun onEmptyTrash() {
         updateState {
             copy(
@@ -947,8 +961,9 @@ internal class AllItemsViewModel @Inject constructor(
     }
 
     fun navigateToCollections() {
-        ScreenArguments.collectionsArgs = CollectionsArgs(libraryId = fileStore.getSelectedLibrary(), fileStore.getSelectedCollectionId())
-        triggerEffect(AllItemsViewEffect.ShowCollectionsEffect)
+        val collectionsArgs = CollectionsArgs(libraryId = fileStore.getSelectedLibrary(), fileStore.getSelectedCollectionId())
+        val encodedArgs = navigationParamsMarshaller.encodeObjectToBase64(collectionsArgs, StandardCharsets.UTF_8)
+        triggerEffect(AllItemsViewEffect.ShowCollectionsEffect(encodedArgs))
     }
 
     fun onDismissDialog() {
@@ -1170,7 +1185,7 @@ internal data class AllItemsViewState(
 }
 
 internal sealed class AllItemsViewEffect : ViewEffect {
-    object ShowCollectionsEffect: AllItemsViewEffect()
+    data class ShowCollectionsEffect(val screenArgs: String): AllItemsViewEffect()
     data class ShowItemDetailEffect(val screenArgs: String): AllItemsViewEffect()
     data class ShowAddOrEditNoteEffect(val screenArgs: String): AllItemsViewEffect()
     object ShowItemTypePickerEffect : AllItemsViewEffect()
@@ -1185,6 +1200,7 @@ internal sealed class AllItemsViewEffect : ViewEffect {
     object ShowImageViewer : AllItemsViewEffect()
     data class NavigateToPdfScreen(val params: String) : AllItemsViewEffect()
     object ScreenRefresh : AllItemsViewEffect()
-    object ShowScanBarcode: AllItemsViewEffect()
+    object ShowScanBarcode : AllItemsViewEffect()
     data class ShowRetrieveMetadataDialogEffect(val params: String) : AllItemsViewEffect()
+    data class MaybeScrollToTop(val shouldScrollToTop: Boolean) : AllItemsViewEffect()
 }

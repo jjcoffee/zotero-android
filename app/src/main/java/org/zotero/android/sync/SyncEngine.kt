@@ -4,12 +4,15 @@ import com.google.gson.Gson
 import io.realm.exceptions.RealmError
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import org.zotero.android.api.ZoteroApi
 import org.zotero.android.api.mappers.CollectionResponseMapper
 import org.zotero.android.api.mappers.ItemResponseMapper
 import org.zotero.android.api.mappers.SearchResponseMapper
 import org.zotero.android.api.network.CustomResult
 import org.zotero.android.architecture.Defaults
+import org.zotero.android.architecture.coroutines.Dispatchers
 import org.zotero.android.architecture.navigation.toolbar.data.SyncProgressHandler
 import org.zotero.android.database.DbWrapperMain
 import org.zotero.android.database.objects.RCustomLibraryType
@@ -70,6 +73,7 @@ class SyncUseCase @Inject constructor(
     private val conflictEventStream: ConflictEventStream,
     private val progressHandler: SyncProgressHandler,
     private val sessionStorage: WebDavSessionStorage,
+    private val dispatchers: Dispatchers,
 ) {
     private var userId: Long = 0L
     private var libraryType: Libraries = Libraries.all
@@ -97,8 +101,9 @@ class SyncUseCase @Inject constructor(
         }
 
     private var batchProcessor: SyncBatchProcessor? = null
-    private lateinit var syncSchedulerCoroutineScope: CoroutineScope
 
+    private val coroutineScope = CoroutineScope(dispatchers.io)
+    private lateinit var syncSchedulerSemaphore: Semaphore
 
     fun init(userId: Long, syncDelayIntervals: List<Double>, maxRetryCount: Int) {
         this.syncDelayIntervals = syncDelayIntervals
@@ -106,7 +111,7 @@ class SyncUseCase @Inject constructor(
         this.maxRetryCount = maxRetryCount
     }
 
-    suspend fun start(type: SyncKind, libraries: Libraries, retryAttempt: Int, syncSchedulerCoroutineScope: CoroutineScope) {
+    suspend fun start(type: SyncKind, libraries: Libraries, retryAttempt: Int, syncSchedulerSemaphore: Semaphore) {
         Timber.i("SyncEngine: start with syncKind = $type")
         with(this@SyncUseCase) {
             if (this.isSyncing) {
@@ -114,7 +119,7 @@ class SyncUseCase @Inject constructor(
                 return@with
             }
             this.type = type
-            this.syncSchedulerCoroutineScope = syncSchedulerCoroutineScope
+            this.syncSchedulerSemaphore = syncSchedulerSemaphore
             this.libraryType = libraries
             this.retryAttempt = retryAttempt
             this.progressHandler.reportNewSync()
@@ -459,6 +464,7 @@ class SyncUseCase @Inject constructor(
 
         this.batchProcessor =
             SyncBatchProcessor(
+                dispatchers = this.dispatchers,
                 batches = batches,
                 userId = defaults.getUserId(),
                 zoteroApi = zoteroApi,
@@ -471,28 +477,30 @@ class SyncUseCase @Inject constructor(
                 dateParser = this.dateParser,
                 gson = this.gson,
                 progress = { processed ->
-                    syncSchedulerCoroutineScope.launch {
-                        this@SyncUseCase.progressHandler.reportDownloadBatchSynced(
-                            size = processed,
-                            objectS = objectS,
-                            libraryId = libraryId
-                        )
+                    coroutineScope.launch {
+                        syncSchedulerSemaphore.withPermit {
+                            this@SyncUseCase.progressHandler.reportDownloadBatchSynced(
+                                size = processed,
+                                objectS = objectS,
+                                libraryId = libraryId
+                            )
+                        }
                     }
-
                 },
                 completion = { result ->
-                    syncSchedulerCoroutineScope.launch {
-                        this@SyncUseCase.batchProcessor?.cancelAllOperations()
-                        this@SyncUseCase.batchProcessor = null
-                        val keys = batches.flatMap { it.keys }
-                        finishBatchesSyncAction(
-                            libraryId = libraryId,
-                            objectS = objectS,
-                            result = result,
-                            keys = keys
-                        )
+                    coroutineScope.launch {
+                        syncSchedulerSemaphore.withPermit {
+                            this@SyncUseCase.batchProcessor?.cancelAllOperations()
+                            this@SyncUseCase.batchProcessor = null
+                            val keys = batches.flatMap { it.keys }
+                            finishBatchesSyncAction(
+                                libraryId = libraryId,
+                                objectS = objectS,
+                                result = result,
+                                keys = keys
+                            )
+                        }
                     }
-
                 }
             )
         this.batchProcessor?.start()
@@ -1534,8 +1542,10 @@ class SyncUseCase @Inject constructor(
     }
 
     fun enqueueResolution(resolution: ConflictResolution) {
-        syncSchedulerCoroutineScope.launch {
-            enqueue(actions = actions(resolution), index = 0)
+        coroutineScope.launch {
+            syncSchedulerSemaphore.withPermit {
+                enqueue(actions = actions(resolution), index = 0)
+            }
         }
     }
 
@@ -1761,7 +1771,8 @@ class SyncUseCase @Inject constructor(
             key = key,
             libraryId = libraryId,
             userId = this.userId,
-            coroutineScope = this.syncSchedulerCoroutineScope,
+            coroutineScope = this.coroutineScope,
+            syncSchedulerSemaphore = this.syncSchedulerSemaphore
         )
         try {
             action.result()

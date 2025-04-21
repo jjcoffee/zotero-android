@@ -88,6 +88,7 @@ import org.zotero.android.architecture.ViewEffect
 import org.zotero.android.architecture.ViewState
 import org.zotero.android.architecture.ifFailure
 import org.zotero.android.architecture.navigation.NavigationParamsMarshaller
+import org.zotero.android.architecture.navigation.toolbar.data.SyncProgressHandler
 import org.zotero.android.architecture.require
 import org.zotero.android.database.DbRequest
 import org.zotero.android.database.DbWrapperMain
@@ -200,6 +201,7 @@ class PdfReaderViewModel @Inject constructor(
     private val dateParser: DateParser,
     private val navigationParamsMarshaller: NavigationParamsMarshaller,
     private val dispatcher: CoroutineDispatcher,
+    private val progressHandler: SyncProgressHandler,
     stateHandle: SavedStateHandle,
 ) : BaseViewModel2<PdfReaderViewState, PdfReaderViewEffect>(PdfReaderViewState()), PdfReaderVMInterface {
 
@@ -217,14 +219,12 @@ class PdfReaderViewModel @Inject constructor(
     private val onAnnotationSearchStateFlow = MutableStateFlow("")
     private val onAnnotationChangedDebouncerFlow = MutableStateFlow<Triple<Int, List<String>, FreeTextAnnotation>?>(null)
     private val onOutlineSearchStateFlow = MutableStateFlow("")
+    private val onStorePageFlow = MutableStateFlow(0)
     private val onCommentChangeFlow = MutableStateFlow<Pair<String, String>?>(null)
     private lateinit var fragmentManager: FragmentManager
     private var isTablet: Boolean = false
 
     private val handler = Handler(context.mainLooper)
-
-    //Used to recreate a new fragment preserving viewport state
-    private lateinit var pdfDocumentBeforeFragmentDestruction: PdfDocument
 
     override var annotationMaxSideSize = 0
 
@@ -257,6 +257,8 @@ class PdfReaderViewModel @Inject constructor(
         updateState {
             copy(selectedThumbnail = row)
         }
+
+        onStorePageFlow.tryEmit(event.pageIndex)
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
@@ -365,7 +367,6 @@ class PdfReaderViewModel @Inject constructor(
     private fun update(pdfSettings: PDFSettings) {
         defaults.setPDFSettings(pdfSettings)
         pdfReaderThemeDecider.setPdfPageAppearanceMode(pdfSettings.appearanceMode)
-        pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
         replaceFragment()
     }
 
@@ -423,6 +424,7 @@ class PdfReaderViewModel @Inject constructor(
         setupAnnotationSearchStateFlow()
         setupOutlineSearchStateFlow()
         setupCommentChangeFlow()
+        setupStorePageFlow()
         setupAnnotationChangedDebouncerFlow()
 
         val pdfSettings = defaults.getPDFSettings()
@@ -476,6 +478,7 @@ class PdfReaderViewModel @Inject constructor(
         this@PdfReaderViewModel.pdfFragment.addDocumentListener(object :
             DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
+                progressHandler.muteProgressToolbarForScreen()
                 viewModelScope.launch {
                     this@PdfReaderViewModel.onDocumentLoaded(document)
                 }
@@ -625,6 +628,15 @@ class PdfReaderViewModel @Inject constructor(
             .debounce(150)
             .map { text ->
                 searchAnnotations(text)
+            }
+            .launchIn(viewModelScope)
+    }
+
+    private fun setupStorePageFlow() {
+        onStorePageFlow
+            .debounce(3000)
+            .map { page ->
+                store(page)
             }
             .launchIn(viewModelScope)
     }
@@ -1534,7 +1546,9 @@ class PdfReaderViewModel @Inject constructor(
             pdfDocumentAnnotations = viewState.pdfDocumentAnnotations
         )
 
-        pdfFragment.removeOnAnnotationUpdatedListener(onAnnotationUpdatedListener!!)
+        onAnnotationUpdatedListener?.let {
+            pdfFragment.removeOnAnnotationUpdatedListener(it)
+        }
 
         for ((pdfAnnotation, annotation) in updatedPdfAnnotations) {
             update(
@@ -2064,6 +2078,7 @@ class PdfReaderViewModel @Inject constructor(
         }
 
     override fun onCleared() {
+        progressHandler.unMuteProgressToolbarForScreen()
         fragmentManager.commit(allowStateLoss = true) {
             remove(this@PdfReaderViewModel.pdfUiFragment)
         }
@@ -2427,7 +2442,6 @@ class PdfReaderViewModel @Inject constructor(
             //In either of those cases the ViewModel can be caught in the process of re-initializing pdfFragment and since we are navigating away from PdfReaderScreen the execution of onStop method's contents is no longer needed
             return
         }
-        pdfDocumentBeforeFragmentDestruction = pdfFragment.document!!
         submitPendingPage(pdfUiFragment.pageIndex)
         if (isChangingConfigurations) {
             removeFragment()
@@ -2477,6 +2491,8 @@ class PdfReaderViewModel @Inject constructor(
         this.pdfFragment.addDocumentListener(object : DocumentListener {
             override fun onDocumentLoaded(document: PdfDocument) {
                 viewModelScope.launch {
+                    progressHandler.muteProgressToolbarForScreen()
+
                     this@PdfReaderViewModel.onDocumentLoaded(document)
 
                     if (queuedUpPdfReaderColorPickerResult != null) {
